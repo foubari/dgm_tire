@@ -168,11 +168,26 @@ class Pipeline:
         return config_file
 
     def get_checkpoint_path(self, model: str, seed: int) -> Path:
-        """Get checkpoint path for model and seed."""
+        """Get checkpoint path for model and seed (Windows-compatible)."""
         suffix = "_toy" if self.dataset == "toy" else ""
-        checkpoint_dir = Path("outputs") / f"{model}{suffix}" / f"run_seed{seed}" / "check"
-        checkpoint_file = checkpoint_dir / "checkpoint_best.pt"
+        output_base = Path("outputs") / f"{model}{suffix}"
+        symlink_name = output_base / f"run_seed{seed}"
 
+        # Try symlink first (works on Unix/admin Windows)
+        if symlink_name.exists():
+            checkpoint_file = symlink_name / "check" / "checkpoint_best.pt"
+            return checkpoint_file
+
+        # Fallback for Windows: use stored path from state
+        if 'run_directories' in self.state:
+            if model in self.state.get('run_directories', {}):
+                if seed in self.state['run_directories'][model]:
+                    run_dir = Path(self.state['run_directories'][model][seed])
+                    checkpoint_file = run_dir / "check" / "checkpoint_best.pt"
+                    return checkpoint_file
+
+        # Last resort: return symlink path anyway (will fail gracefully)
+        checkpoint_file = symlink_name / "check" / "checkpoint_best.pt"
         return checkpoint_file
 
     def create_run_symlink(self, model: str, seed: int):
@@ -260,6 +275,13 @@ class Pipeline:
                 if timestamp_dirs:
                     latest_dir = max(timestamp_dirs, key=lambda d: d.stat().st_mtime)
                     symlink_name = output_base / f"run_seed{seed}"
+
+                    # Store the actual directory path in state for Windows compatibility
+                    if 'run_directories' not in self.state:
+                        self.state['run_directories'] = {}
+                    if model not in self.state['run_directories']:
+                        self.state['run_directories'][model] = {}
+                    self.state['run_directories'][model][seed] = str(latest_dir)
 
                     # Remove existing
                     if symlink_name.exists() or symlink_name.is_symlink():
