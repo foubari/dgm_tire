@@ -1,0 +1,43 @@
+model:
+  type: meta_vae
+  latent_dim: 32
+  component_latent_dim: 4
+  beta: 4.0
+  marginal_beta: 1.0
+data:
+  root_dir: data/epure
+  condition_csv: data/epure/performances.csv
+  component_dirs:
+  - group_nc
+  - group_km
+  - bt
+  - fpu
+  - tpc
+  condition_columns:
+  - d_cons_norm
+  - d_rigid_norm
+  - d_life_norm
+  - d_stab_norm
+  prefix_column: matching
+  filename_pattern: 'mdbk_{prefix}_{component}.png'
+  split_column: train
+  normalized: true
+training:
+  marginal_epochs: 1
+  marginal_lr: 0.001
+  epochs: 1
+  batch_size: 128
+  num_workers: 4
+  lr: 0.0005
+  check_every: 1
+  seed: 42
+  mask_warmup_epochs: 20
+  max_mask_prob: 0.7
+  eval_every: 1
+paths:
+  output_dir: outputs/meta_vae/
+  samples_dir: samples/meta_vae/
+sampling:
+  num_samples: 50
+  batch_sz: 64
+  mode: conditional

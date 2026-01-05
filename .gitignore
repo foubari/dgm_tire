@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Data (EPURE is private, toy_epure is public)
+data/epure/
+*.zip
+*.tar.gz
+
+# Model outputs
+outputs/
+samples/
+logs/
+checkpoints/
+runs/
+
+# Evaluation cache
+evaluation_results/
+evaluation_cache/
+*.npy
+*.npz
+
+# Temporary files
+*.tmp
+.DS_Store
+
+# Analysis outputs
+scripts/analysis_output/

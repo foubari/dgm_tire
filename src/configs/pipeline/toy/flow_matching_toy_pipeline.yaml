@@ -1,0 +1,51 @@
+model:
+  type: flow_matching
+  image_size:
+  - 64
+  - 32
+  dim: 64
+  dim_mults:
+  - 1
+  - 2
+  - 4
+  timesteps: 1000
+  loss_type: mse
+  cond_drop_prob: 0.1
+  sigma_min: 0.001
+data:
+  root_dir: data/toy_epure
+  condition_csv: data/toy_epure/performances.csv
+  component_dirs:
+  - group_nc
+  - group_km
+  - fpu
+  condition_columns:
+  - d_cons
+  - d_rigid
+  - d_life
+  - d_stab
+  prefix_column: matching
+  filename_pattern: '{prefix}_{component}.png'
+  split_column: train
+  normalized: false
+training:
+  epochs: 100
+  batch_size: 64
+  num_workers: 4
+  lr: 0.0001
+  ema_decay: 0.9999
+  ema_update_every: 10
+  eval_every: 10
+  check_every: 25
+  seed: 0
+paths:
+  output_dir: outputs/flow_matching_toy/
+  samples_dir: samples/flow_matching_toy/
+sampling:
+  num_samples: 1000
+  batch_sz: 8
+  guidance_scale: 2.0
+  mode: conditional
+  components:
+  - group_nc
+  - group_km

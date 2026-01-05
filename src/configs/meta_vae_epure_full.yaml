@@ -1,0 +1,44 @@
+# Full training configuration for Meta VAE with EPURE dataset
+
+model:
+  type: meta_vae
+  latent_dim: 32              # Meta latent dimension
+  component_latent_dim: 4     # Per-component latent dimension
+  beta: 4.0                   # KL weight
+  marginal_beta: 1.0          # Beta for marginal VAEs (Stage 1)
+
+data:
+  root_dir: "data/epure"
+  condition_csv: "data/epure/performances.csv"
+  component_dirs: ["group_nc", "group_km", "bt", "fpu", "tpc"]
+  condition_columns: ["d_cons_norm", "d_rigid_norm", "d_life_norm", "d_stab_norm"]
+  prefix_column: "matching"
+  filename_pattern: "{prefix}_{component}.png"
+  split_column: "train"
+  normalized: true
+
+training:
+  # Stage 1: Marginal VAEs
+  marginal_epochs: 50
+  marginal_lr: 0.001
+
+  # Stage 2: Meta-VAE
+  epochs: 100
+  batch_size: 128
+  num_workers: 4
+  lr: 0.0005
+  check_every: 10
+  seed: 42
+
+  # Progressive masking
+  mask_warmup_epochs: 20
+  max_mask_prob: 0.7
+
+paths:
+  output_dir: "outputs/meta_vae/"
+  samples_dir: "samples/meta_vae/"
+
+sampling:
+  num_samples: 1000
+  batch_sz: 64
+  mode: conditional

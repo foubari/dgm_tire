@@ -1,0 +1,46 @@
+model:
+  type: gmrf_mvae
+  num_components: 5
+  latent_dim: 4      # ICTAI alignment: 32 -> 4
+  nf: 32             # ICTAI alignment: 64 -> 32
+  nf_max: 512        # Now actively used with capping
+  hidden_dim: 128    # ICTAI alignment: 256 -> 128
+  n_layers: 2
+  beta: 1.0          # ICTAI alignment: 4.0 -> 1.0
+  cond_dim: 4
+  dropout_p: 0.1
+data:
+  root_dir: data/epure
+  condition_csv: data/epure/performances.csv
+  component_dirs:
+  - group_nc
+  - group_km
+  - bt
+  - fpu
+  - tpc
+  condition_columns:
+  - d_cons_norm
+  - d_rigid_norm
+  - d_life_norm
+  - d_stab_norm
+  prefix_column: matching
+  filename_pattern: 'mdbk_{prefix}_{component}.png'
+  split_column: train
+  normalized: true
+training:
+  epochs: 100
+  batch_size: 128
+  num_workers: 4
+  lr: 0.0005
+  check_every: 25
+  seed: 42
+  mask_warmup_epochs: 20
+  max_mask_prob: 0.7
+  eval_every: 10
+paths:
+  output_dir: outputs/gmrf_mvae/
+  samples_dir: samples/gmrf_mvae/
+sampling:
+  num_samples: 1000
+  batch_sz: 64
+  mode: conditional

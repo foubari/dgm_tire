@@ -1,0 +1,64 @@
+# Basic tire configuration example
+
+tire:
+  resolution: 64
+
+  components:
+    - name: carcass
+      type: carcass
+      params:
+        y_top: 8
+        y_bottom: 56
+        w_belly: 24
+        w_bottom: 14
+        belly_position: 0.40
+        thickness: 4
+        lip_rounding: 3
+        material:
+          E: 1.0
+          rho: 1.0
+          name: "rubber_carcass"
+
+    - name: crown
+      type: crown
+      params:
+        y_top: 8
+        y_bottom: 56
+        w_belly: 24
+        belly_position: 0.40
+        thickness: 5
+        thickness_carcass: 4
+        material:
+          E: 0.8
+          rho: 1.2
+          name: "steel_belt"
+
+    - name: flanks
+      type: flanks
+      params:
+        y_top: 8
+        y_bottom: 56
+        w_belly: 24
+        w_bottom: 14
+        belly_position: 0.40
+        thickness_top: 5
+        thickness_bottom: 2
+        thickness_carcass: 4
+        thickness_crown: 5
+        lip_rounding: 3
+        material:
+          E: 0.5
+          rho: 0.8
+          name: "rubber_sidewall"
+
+# Metrics to compute
+metrics:
+  - vertical_stiffness
+  - mass
+  - performance_ratio
+
+# Deformation settings
+deformation:
+  model: rigid_ring
+  forces: [100, 200, 400]
+  max_strain: 0.3

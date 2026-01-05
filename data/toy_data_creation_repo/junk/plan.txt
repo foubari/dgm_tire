@@ -1,0 +1,259 @@
+Architecture clé
+🏗️ Système modulaire en 3 piliers
+Composants variables (Option A validée) :
+Classe ComponentBase abstraite + ComponentRegistry
+Classe Tire qui compose N composants
+Ex: carcasse + couronne1 + couronne2 + flancs
+Métriques extensibles (Héritage de classes) :
+BaseMetric abstraite avec compute() + visualize() optionnel
+MetricRegistry pour enregistrement
+Chaque métrique = nouvelle classe, zéro modification du code existant
+Génération de datasets (Configuration YAML) :
+DatasetGenerator avec Latin Hypercube Sampling
+Config YAML définit : ranges de paramètres, nb samples, métriques à calculer
+Génération automatique d'images + metadata CSV
+Structure du repo
+tire-deformation-benchmark/
+├── tire_bench/          # Package Python
+│   ├── core/           # ComponentBase, Tire, MaterialProperties
+│   ├── geometry/       # Générateurs (port de generate_components)
+│   ├── mechanics/      # RigidRingModel (port de TireMechanics)
+│   ├── metrics/        # BaseMetric + métriques (K_vert, mass, perf)
+│   ├── dataset/        # DatasetGenerator ⭐ TRÈS IMPORTANT
+│   ├── evaluation/     # DeformationEvaluator
+│   └── visualization/  # Visualisations (port de show_progression)
+├── configs/examples/   # YAML templates
+├── examples/           # Scripts Python d'exemple
+└── README.md          # Avec image_readme.png
+Extensibilité garantie
+Ajouter une métrique → 1 classe, décorateur @MetricRegistry.register(), c'est tout ! Ajouter un composant → 1 classe, décorateur @ComponentRegistry.register(), c'est tout ! Générer dataset → 1 fichier YAML, DatasetGenerator.from_yaml().generate(), c'est tout ! Le plan est prêt pour l'implémentation ! 🚀
+Claude’s Plan
+Plan d'implémentation : Tire Deformation Benchmark Repository
+Vue d'ensemble
+Transformer le notebook Tire_Deformation_Demo_updated.ipynb en un repository modulable, extensible et professionnel pour benchmarker les architectures de pneus sous déformation.
+Objectifs principaux
+✅ Composants modulables : Supporter un nombre variable de composants (pas seulement 3)
+✅ Métriques extensibles : Système pluggable basé sur l'héritage de classes
+✅ Génération de datasets : Configuration YAML pour définir paramètres et générer facilement
+✅ Fonction d'évaluation : Refactoriser et améliorer l'évaluation existante
+✅ README pédagogique : Documentation propre et professionnelle avec visualisations
+Architecture adoptée
+Structure du repository
+tire-deformation-benchmark/
+├── README.md                          # Documentation principale avec image
+├── setup.py                           # Configuration du package
+├── requirements.txt
+├── tire_bench/                        # Package principal
+│   ├── core/                          # Abstractions de base
+│   │   ├── component.py              # ComponentBase + Registry
+│   │   ├── tire.py                   # Classe Tire (composition)
+│   │   └── materials.py              # MaterialProperties
+│   ├── geometry/                      # Génération géométrique
+│   │   ├── generator.py              # Générateurs de composants
+│   │   └── primitives.py             # Fonctions géométriques
+│   ├── mechanics/                     # Modèles physiques
+│   │   ├── rigid_ring.py             # Port de TireMechanics
+│   │   └── base.py                   # Interface déformation
+│   ├── metrics/                       # Système de métriques
+│   │   ├── base.py                   # BaseMetric (abstract)
+│   │   ├── registry.py               # MetricRegistry
+│   │   ├── stiffness.py              # K_vert metric
+│   │   ├── mass.py                   # Mass metric
+│   │   └── performance.py            # Performance ratio
+│   ├── dataset/                       # Génération datasets
+│   │   ├── generator.py              # DatasetGenerator
+│   │   ├── config.py                 # Config schema
+│   │   └── io.py                     # Save/load utils
+│   ├── evaluation/                    # Évaluation
+│   │   └── evaluator.py              # DeformationEvaluator
+│   └── visualization/                 # Visualisations
+│       ├── tire_plot.py              # Visualisation de pneus
+│       └── deformation_plot.py       # show_progression refactoré
+├── configs/                           # Fichiers de configuration
+│   └── examples/
+│       ├── basic_tire.yaml           # Config tire simple
+│       ├── multi_crown.yaml          # Multi-couches
+│       └── dataset_generation.yaml   # Config génération dataset
+├── examples/                          # Scripts d'exemple
+│   ├── 01_basic_usage.py
+│   ├── 02_custom_metrics.py
+│   ├── 03_generate_dataset.py
+│   └── 04_evaluate_model.py
+├── notebooks/
+│   └── tutorial.ipynb                # Tutoriel interactif
+└── assets/
+    └── image_readme.png              # Image progression déformation
+Principes de conception
+1. Système de composants (Principe Open-Closed)
+ComponentBase : Classe abstraite avec méthode generate()
+ComponentRegistry : Pattern registry pour créer composants depuis config
+Tire : Composition de composants (nombre variable)
+Permet d'ajouter de nouveaux types de composants sans modifier le code existant
+2. Système de métriques (Héritage + Registry)
+BaseMetric : Classe abstraite avec compute() et visualize() optionnel
+MetricRegistry : Permet d'enregistrer et instancier métriques depuis config
+Chaque métrique peut avoir sa propre visualisation
+Ajout de nouvelles métriques = nouvelle classe qui hérite, sans toucher au code existant
+3. Configuration YAML/JSON
+Définir géométries de pneus en YAML
+Spécifier paramètres de génération de dataset (sampling strategy, ranges, nb samples)
+Latin Hypercube Sampling pour meilleure couverture de l'espace des paramètres
+Plan d'implémentation détaillé
+Phase 1 : Structure et core (Fondations)
+Fichiers critiques :
+tire_bench/core/component.py - ComponentBase, MaterialProperties, ComponentRegistry
+tire_bench/core/tire.py - Classe Tire avec composition
+tire_bench/metrics/base.py - BaseMetric abstract class
+tire_bench/metrics/registry.py - MetricRegistry
+Actions :
+Créer la structure de dossiers complète
+Implémenter ComponentBase avec pattern registry
+Implémenter Tire avec support pour nombre variable de composants
+Implémenter BaseMetric et MetricRegistry
+Créer setup.py et requirements.txt
+Phase 2 : Port du notebook (Logique métier)
+Fichiers critiques :
+tire_bench/geometry/generator.py - Port de generate_components()
+tire_bench/geometry/primitives.py - Fonctions géométriques (ellipses, etc.)
+tire_bench/mechanics/rigid_ring.py - Port de TireMechanics
+tire_bench/metrics/stiffness.py - K_vert calculation
+tire_bench/metrics/mass.py - Mass calculation
+tire_bench/metrics/performance.py - K/mass ratio
+Actions :
+Refactoriser generate_components() en classes de générateurs :
+CarcassComponent
+CrownComponent
+FlanksComponent
+Porter la classe TireMechanics vers RigidRingModel
+Implémenter les 3 métriques de base (K_vert, mass, performance_ratio)
+Tester que les résultats correspondent au notebook
+Phase 3 : Dataset generation (Fonctionnalité clé)
+Fichiers critiques :
+tire_bench/dataset/generator.py - DatasetGenerator
+tire_bench/dataset/config.py - Config validation
+tire_bench/dataset/io.py - Save/load utilities
+configs/examples/dataset_generation.yaml - Config template
+Actions :
+Implémenter DatasetGenerator avec :
+Latin Hypercube Sampling
+Random sampling
+Grid sampling
+Support pour ranges de paramètres (uniform, choice)
+Génération automatique de métadata (CSV/JSON)
+Sauvegarde des images (originales + déformées)
+Calcul automatique des métriques pour chaque sample
+Phase 4 : Visualisation et évaluation
+Fichiers critiques :
+tire_bench/visualization/tire_plot.py - Visualisation tire
+tire_bench/visualization/deformation_plot.py - show_progression refactoré
+tire_bench/evaluation/evaluator.py - DeformationEvaluator
+Actions :
+Porter visualize() vers tire_plot.py
+Porter show_progression() vers deformation_plot.py
+Porter compare_geometries() vers comparison_plot.py
+Implémenter DeformationEvaluator avec métriques :
+Volume conservation
+Shape similarity (IoU)
+Component ratio preservation
+Height change accuracy
+Phase 5 : Configuration et exemples
+Fichiers critiques :
+configs/examples/basic_tire.yaml
+configs/examples/multi_crown.yaml
+configs/examples/dataset_generation.yaml
+examples/01_basic_usage.py
+examples/02_custom_metrics.py
+examples/03_generate_dataset.py
+examples/04_evaluate_model.py
+Actions :
+Créer configs d'exemple YAML
+Créer scripts d'exemple Python montrant :
+Usage basique
+Ajout de métriques custom
+Génération de dataset
+Évaluation de modèles
+Pneus avec composants variables
+Phase 6 : Documentation (README pédagogique)
+Fichiers critiques :
+README.md - Documentation principale
+docs/architecture.md
+docs/adding_metrics.md
+docs/dataset_format.md
+Actions :
+Créer README avec :
+Image de progression (image_readme.png)
+Quick Start
+Installation
+Features
+Examples
+Architecture overview
+Citation
+Créer documentation technique détaillée
+Ajouter docstrings complètes à toutes les classes/fonctions
+Phase 7 : Polish final
+Actions :
+Ajouter type hints partout
+Créer init.py avec imports propres
+Ajouter .gitignore
+Tester tous les exemples
+Vérifier cohérence avec notebook original
+Points techniques importants
+Gestion des composants superposés
+Actuellement : composants mutuellement exclusifs
+Solution : Priority system dans Tire class
+# Dans tire.py
+def get_full_mask(self, priority_order=None):
+    # Apply components in priority order
+    # Later components can overlap earlier ones
+Ajout dynamique de composants
+# Exemple : ajouter une 2e couche de couronne
+tire.add_component('crown_layer_2', CrownComponent(...))
+# Tout continue de fonctionner (métriques, visualisation, etc.)
+Ajout de nouvelles métriques
+@MetricRegistry.register('damping')
+class DampingMetric(BaseMetric):
+    def compute(self, tire, **kwargs):
+        # Logique custom
+        return value
+
+    def visualize(self, tire, value, **kwargs):
+        # Visualisation custom (optionnel)
+        return fig
+Extensibilité garantie
+✅ Ajouter une métrique
+Créer classe héritant de BaseMetric
+Décorer avec @MetricRegistry.register('nom')
+Implémenter compute() et optionnellement visualize()
+Aucune modification du code existant nécessaire
+✅ Ajouter un composant
+Créer classe héritant de ComponentBase
+Décorer avec @ComponentRegistry.register('nom')
+Implémenter generate()
+Aucune modification du code existant nécessaire
+✅ Générer un dataset
+Créer fichier YAML avec ranges de paramètres
+Exécuter DatasetGenerator.from_yaml(config).generate()
+Dataset créé automatiquement avec métadata
+Validation
+Critères de succès
+ Package installable (pip install -e .)
+ Notebook original reproductible avec nouveau code
+ Dataset générable depuis config YAML
+ Au moins 3 métriques implémentées (K_vert, mass, performance)
+ Support pour composants variables (1 à N composants)
+ Exemples fonctionnels
+ README complet avec image_readme.png
+ Documentation complète
+Tests à effectuer
+Reproduire résultats du notebook
+Tester ajout d'un composant custom
+Tester ajout d'une métrique custom
+Générer dataset de 100 samples
+Vérifier visualisations
+Valider évaluation sur pneus déformés
+Notes importantes
+Pas de modification du code existant : Principe Open-Closed respecté partout
+Configuration first : YAML pour tout ce qui est paramétrable
+Latin Hypercube Sampling : Meilleure couverture de l'espace que random
+Visualisation par métrique : Chaque métrique peut avoir sa visualisation
+image_readme.png : À utiliser dans le README pour montrer la progression de déformation

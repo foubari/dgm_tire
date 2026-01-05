@@ -1,0 +1,53 @@
+model:
+  type: ddpm
+  image_size:
+  - 64
+  - 32
+  dim: 64
+  dim_mults:
+  - 1
+  - 2
+  - 4
+  timesteps: 1000
+  objective: pred_v
+  beta_schedule: sigmoid
+  cond_drop_prob: 0.1
+data:
+  root_dir: data/epure
+  condition_csv: data/epure/performances.csv
+  component_dirs:
+  - group_nc
+  - group_km
+  - bt
+  - fpu
+  - tpc
+  condition_columns:
+  - width_px
+  - height_px
+  prefix_column: matching
+  filename_pattern: mdbk_{prefix}_{component}.png
+  split_column: train
+  normalized: false
+training:
+  epochs: 100
+  batch_size: 64
+  num_workers: 4
+  lr: 0.0001
+  optimizer: adam
+  ema_decay: 0.9999
+  ema_update_every: 10
+  eval_every: 10
+  check_every: 25
+  seed: 0
+paths:
+  output_dir: outputs/ddpm/
+  samples_dir: samples/ddpm/
+sampling:
+  num_samples: 1000
+  batch_sz: 8
+  guidance_scale: 2.0
+  mode: conditional
+  components:
+  - fpu
+  - group_nc
+  - group_km

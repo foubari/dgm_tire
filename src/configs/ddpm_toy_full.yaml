@@ -1,0 +1,44 @@
+# Full training configuration for DDPM with ToyTire dataset
+
+model:
+  type: ddpm
+  image_size: [64, 32]  # ToyTire: 64x32 (cropped from symmetric 64x64)
+  dim: 64  # Base dimension for UNet
+  dim_mults: [1, 2, 4]  # Channel multipliers for UNet
+  # channels: auto-calculated from len(component_dirs) = 3
+  # cond_dim: auto-calculated from len(condition_columns) = 4
+  timesteps: 1000  # Full diffusion steps
+  loss_type: l2
+  cond_drop_prob: 0.1  # Classifier-free guidance dropout probability
+
+data:
+  root_dir: "data/toy_epure"  # Relative to project root (train/ added automatically)
+  condition_csv: "data/toy_epure/performances.csv"  # CSV file with conditioning data
+  component_dirs: ["group_nc", "group_km", "fpu"]  # 3 components
+  condition_columns: ["d_cons", "d_rigid", "d_life", "d_stab"]  # Performance metrics columns
+  prefix_column: "matching"  # Column name containing prefix/ID
+  filename_pattern: "{prefix}_{component}.png"  # toy_00001_group_nc.png
+  split_column: "train"  # Column name for train/test split
+  normalized: false  # Use normalized versions of condition columns
+
+training:
+  epochs: 500
+  batch_size: 64
+  num_workers: 4
+  lr: 0.0001
+  ema_decay: 0.9999  # EMA decay rate
+  ema_update_every: 10  # Update EMA every N steps
+  eval_every: 50  # Evaluate every N epochs
+  check_every: 50  # Save checkpoint every N epochs
+  seed: 0
+
+paths:
+  output_dir: "outputs/ddpm_toy/"  # Relative to project root
+  samples_dir: "samples/ddpm_toy/"  # Relative to project root
+
+sampling:
+  num_samples: 16
+  batch_sz: 8
+  guidance_scale: 2.0
+  mode: conditional  # unconditional, conditional, or inpainting
+  components: ["group_nc", "group_km"]  # For inpainting mode

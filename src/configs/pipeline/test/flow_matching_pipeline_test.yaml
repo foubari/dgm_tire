@@ -1,0 +1,53 @@
+model:
+  type: flow_matching
+  image_size:
+  - 64
+  - 32
+  dim: 64
+  dim_mults:
+  - 1
+  - 2
+  - 4
+  timesteps: 100
+  solver: euler
+  cond_drop_prob: 0.1
+  sigma_min: 0.001
+data:
+  root_dir: data/epure
+  condition_csv: data/epure/performances.csv
+  component_dirs:
+  - group_nc
+  - group_km
+  - bt
+  - fpu
+  - tpc
+  condition_columns:
+  - width_px
+  - height_px
+  prefix_column: matching
+  filename_pattern: mdbk_{prefix}_{component}.png
+  split_column: train
+  normalized: false
+training:
+  epochs: 1
+  batch_size: 64
+  num_workers: 4
+  lr: 0.0001
+  optimizer: adam
+  ema_decay: 0.9999
+  ema_update_every: 10
+  eval_every: 1
+  check_every: 1
+  seed: 0
+paths:
+  output_dir: outputs/flow_matching/
+  samples_dir: samples/flow_matching/
+sampling:
+  num_samples: 50
+  batch_sz: 8
+  guidance_scale: 2.0
+  mode: conditional
+  components:
+  - fpu
+  - group_nc
+  - group_km

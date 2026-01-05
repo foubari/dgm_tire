@@ -1,0 +1,53 @@
+model:
+  type: mdm
+  image_size:
+  - 64
+  - 32
+  dim: 64
+  dim_mults:
+  - 1
+  - 2
+  - 4
+  num_classes: 6
+  timesteps: 500
+  loss_type: vb_stochastic
+  cond_drop_prob: 0.1
+  objective: pred_v
+  beta_schedule: sigmoid
+data:
+  root_dir: data/epure/
+  condition_csv: data/epure/preprocessed/performances.csv
+  condition_columns:
+  - d_cons
+  - d_rigid
+  - d_life
+  - d_stab
+  prefix_column: matching
+  split_column: train
+  resolution:
+  - 64
+  - 32
+  mask_format: numpy
+  mask_path: null
+  filename_pattern: 'mdbk_{prefix}.png'
+  normalized: false
+training:
+  epochs: 100
+  batch_size: 64
+  num_workers: 4
+  lr: 0.0001
+  eval_every: 10
+  check_every: 25
+  seed: 0
+paths:
+  output_dir: outputs/mdm/
+  samples_dir: samples/mdm/
+sampling:
+  num_samples: 1000
+  batch_sz: 8
+  guidance_scale: 2.0
+  mode: conditional
+  components:
+  - fpu
+  - group_nc
+  - group_km

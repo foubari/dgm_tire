@@ -1,0 +1,80 @@
+# Quick test configuration for VQ-VAE (reduced epochs and timesteps)
+
+model:
+  type: vqvae
+  
+  # Architecture
+  image_size: [64, 32]  # [H, W]
+  channels: 5  # auto-calculated from component_dirs if omitted
+  cond_dim: 2  # auto-calculated from condition_columns if omitted
+  
+  # Encoder/Decoder
+  dim: 64  # Base dimension
+  dim_mults: [1, 2, 4]  # Channel multipliers (64 → 128 → 256)
+  
+  # Latent space
+  latent_spatial: [16, 8]  # Spatial size after 2 downsamples
+  latent_dim: 40  # Latent channels (8 per component × 5)
+  
+  # Quantization
+  num_embeddings: 512  # Codebook size
+  commitment_cost: 0.25  # Beta for commitment loss
+  ema_decay: 0.99  # EMA decay for codebook updates
+  codebook_reset_interval: 50  # Reset unused codes every N epochs
+  
+  # Prior (PixelCNN)
+  prior:
+    enabled: true
+    hidden_dim: 128
+    num_layers: 12
+    kernel_size: 3
+  
+  # Conditioning
+  cond_drop_prob: 0.1  # For classifier-free guidance in prior
+  
+  # Losses
+  reconstruction_loss: mse  # mse or bce
+  perceptual_weight: 0.0  # Optional perceptual loss (not implemented initially)
+
+data:
+  root_dir: "data/epure"  # Relative to project root
+  condition_csv: "data/epure/performances.csv"  # CSV file with conditioning data
+  component_dirs: ["group_nc", "group_km", "bt", "fpu", "tpc"]  # 5 components
+  condition_columns: ["width_px", "height_px"]  # Conditioning columns
+  prefix_column: "matching"  # Column name containing prefix/ID
+  filename_pattern: "mdbk_{prefix}_{component}.png"  # Filename pattern
+  split_column: "train"  # Column name for train/test split
+  normalized: false  # Use normalized versions of condition columns
+
+training:
+  epochs: 5  # Reduced for quick testing
+  batch_size: 16  # Smaller batch for quick testing
+  num_workers: 0  # Windows compatibility
+  
+  # VQ-VAE training (Phase 1)
+  lr_vqvae: 0.0002
+  optimizer_vqvae: adam
+  
+  # Prior training (Phase 2)
+  train_prior_after_epoch: 3  # Start training prior after epoch 3
+  lr_prior: 0.0001
+  optimizer_prior: adam
+  
+  # Evaluation & checkpoints
+  eval_every: 1  # Evaluate every epoch
+  check_every: 1  # Save checkpoint every epoch
+  seed: 0
+
+paths:
+  output_dir: "outputs/vqvae/"  # Relative to project root
+  samples_dir: "samples/vqvae/"  # Relative to project root
+
+sampling:
+  num_samples: 16
+  batch_sz: 8
+  temperature: 1.0  # Sampling temperature for prior
+  top_k: 100  # Top-k filtering for prior sampling
+  guidance_scale: 2.0  # Classifier-free guidance scale
+  mode: conditional  # unconditional, conditional, or inpainting
+  components: ["fpu", "group_nc", "group_km"]  # For inpainting mode
+

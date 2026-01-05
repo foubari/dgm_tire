@@ -1,0 +1,59 @@
+# Quick test configuration for WGAN-GP (reduced epochs for fast testing)
+
+model:
+  type: wgan_gp
+  channels: null  # Auto-calculated from len(component_dirs)
+  image_size: [64, 32]  # [H, W]
+
+  # Latent space configuration
+  latent_dim_per_component: 4  # Latent dims per component
+  # total_latent_dim: null  # Auto-calculated as len(component_dirs) * latent_dim_per_component
+
+  # Generator architecture
+  dim: 64  # Base dimension for generator
+  dim_mults: [1, 2, 4]  # Channel multipliers for upsampling blocks
+
+  # WGAN-GP hyperparameters
+  lambda_gp: 10  # Gradient penalty weight
+  n_critic: 5  # Critic updates per generator update
+
+  # Classifier-free guidance
+  cond_drop_prob: 0.1  # Condition dropout probability for CFG
+  cond_dim: null  # Auto-calculated from len(condition_columns)
+
+data:
+  root_dir: "data/epure"
+  condition_csv: "data/epure/performances.csv"
+  component_dirs: ["group_nc", "group_km", "bt", "fpu", "tpc"]
+  condition_columns: ["width_px", "height_px"]
+  prefix_column: "matching"
+  filename_pattern: "mdbk_{prefix}_{component}.png"
+  split_column: "train"
+  normalized: false
+
+training:
+  epochs: 10  # Reduced for quick testing
+  batch_size: 16  # Smaller batch for quick testing
+  num_workers: 0  # Windows compatibility
+  lr_generator: 0.0001
+  lr_critic: 0.0001
+  beta1: 0.0  # Adam beta1 (WGAN-GP recommendation)
+  beta2: 0.9  # Adam beta2
+  optimizer: adam
+  ema_decay: 0.9999
+  ema_update_every: 10
+  eval_every: 2  # Evaluate every 2 epochs for quick testing
+  check_every: 2  # Save checkpoint every 2 epochs for quick testing
+  seed: 0
+
+paths:
+  output_dir: "outputs/wgan_gp/"
+  samples_dir: "samples/wgan_gp/"
+
+sampling:
+  num_samples: 16
+  batch_sz: 8
+  guidance_scale: 2.0
+  mode: conditional  # unconditional, conditional
+  # NOTE: inpainting mode is not yet implemented for WGAN-GP
+

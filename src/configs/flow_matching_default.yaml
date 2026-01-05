@@ -1,0 +1,46 @@
+# Default configuration for Flow Matching
+
+model:
+  type: flow_matching
+  # channels: auto-calculated from len(component_dirs) if not specified
+  image_size: [64, 32]  # [H, W]
+  dim: 64  # Base dimension for UNet
+  dim_mults: [1, 2, 4]  # Channel multipliers for UNet
+  # cond_dim: auto-calculated from len(condition_columns) if not specified
+  timesteps: 100  # Number of integration steps (fewer than DDPM)
+  solver: euler  # euler, heun, or rk4 (heun/rk4 are more accurate but slower)
+  cond_drop_prob: 0.1  # Classifier-free guidance dropout probability
+
+data:
+  root_dir: "data/epure"  # Relative to project root
+  condition_csv: "data/epure/performances.csv"  # CSV file with conditioning data
+  component_dirs: ["group_nc", "group_km", "bt", "fpu", "tpc"]  # 5 components
+  condition_columns: ["width_px", "height_px"]  # Conditioning columns
+  prefix_column: "matching"  # Column name containing prefix/ID
+  filename_pattern: "mdbk_{prefix}_{component}.png"  # Filename pattern
+  split_column: "train"  # Column name for train/test split
+  normalized: false  # Use normalized versions of condition columns
+
+training:
+  epochs: 1000
+  batch_size: 64
+  num_workers: 4
+  lr: 0.0001
+  optimizer: adam  # adam or adamax
+  ema_decay: 0.9999  # EMA decay rate
+  ema_update_every: 10  # Update EMA every N steps
+  eval_every: 100  # Evaluate every N epochs
+  check_every: 100  # Save checkpoint every N epochs
+  seed: 0
+
+paths:
+  output_dir: "outputs/flow_matching/"  # Relative to project root
+  samples_dir: "samples/flow_matching/"  # Relative to project root
+
+sampling:
+  num_samples: 16
+  batch_sz: 8
+  guidance_scale: 2.0
+  mode: conditional  # unconditional, conditional, or inpainting
+  components: ["fpu", "group_nc", "group_km"]  # For inpainting mode
+

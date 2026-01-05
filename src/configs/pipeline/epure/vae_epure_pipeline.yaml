@@ -1,0 +1,48 @@
+model:
+  type: vae
+  image_size:
+  - 64
+  - 32
+  channels: 5
+  cond_dim: 2
+  latent_dim: 32
+  nf: 32
+  nf_max: 256
+  beta: 4.0
+  dropout_p: 0.1
+data:
+  root_dir: data/epure
+  condition_csv: data/epure/performances.csv
+  component_dirs:
+  - group_nc
+  - group_km
+  - bt
+  - fpu
+  - tpc
+  condition_columns:
+  - d_cons_norm
+  - d_rigid_norm
+  - d_life_norm
+  - d_stab_norm
+  prefix_column: matching
+  filename_pattern: 'mdbk_{prefix}_{component}.png'
+  split_column: train
+  normalized: true
+training:
+  epochs: 100
+  batch_size: 128
+  num_workers: 4
+  lr: 0.0002
+  weight_decay: 0.0001
+  warmup_epochs: 20
+  max_mask_prob: 0.7
+  eval_every: 10
+  check_every: 25
+  seed: 0
+paths:
+  output_dir: outputs/vae/
+  samples_dir: samples/vae/
+sampling:
+  num_samples: 1000
+  batch_sz: 16
+  mode: conditional

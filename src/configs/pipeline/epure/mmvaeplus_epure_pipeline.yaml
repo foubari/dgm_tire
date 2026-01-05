@@ -1,0 +1,63 @@
+model:
+  type: mmvaeplus
+  variant: mmvaeplus
+  latent_dim_w: 4
+  latent_dim_z: 4
+  latent_dim_u: 8
+  nf: 40
+  nf_max: 128
+  cond_dim: 2
+  priorposterior: Laplace
+  image_size:
+  - 64
+  - 32
+  channels: 1
+data:
+  root_dir: data/epure
+  component_dirs:
+  - group_nc
+  - group_km
+  - bt
+  - fpu
+  - tpc
+  condition_csv: data/epure/performances.csv
+  condition_columns:
+  - width_px
+  - height_px
+  prefix_column: matching
+  filename_pattern: mdbk_{prefix}_{component}.png
+  split_column: train
+  normalized: true
+training:
+  batch_size: 128
+  epochs: 100
+  lr: 0.001
+  optimizer: adam
+  amsgrad: true
+  beta: 2.5
+  K: 1
+  objective: elbo
+  llik_scaling: 0.0
+  eval_every: 10
+  checkpoint_epochs:
+  - 50
+  - 100
+  - 150
+  - 250
+  num_workers: 4
+  seed: 42
+  device: cuda
+  check_every: 25
+sampling:
+  unconditional:
+    n_samples: 1000
+    batch_size: 64
+  conditional:
+    components:
+    - group_nc
+    - bt
+    batch_size: 32
+  num_samples: 1000
+paths:
+  output_dir: outputs/mmvaeplus/
+  samples_dir: samples/mmvaeplus/

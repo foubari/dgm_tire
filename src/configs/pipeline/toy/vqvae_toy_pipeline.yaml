@@ -1,0 +1,47 @@
+model:
+  type: vqvae
+  image_size:
+  - 64
+  - 32
+  num_hiddens: 128
+  num_residual_layers: 2
+  num_residual_hiddens: 32
+  num_embeddings: 512
+  embedding_dim: 64
+  commitment_cost: 0.25
+  cond_drop_prob: 0.1
+data:
+  root_dir: data/toy_epure
+  condition_csv: data/toy_epure/performances.csv
+  component_dirs:
+  - group_nc
+  - group_km
+  - fpu
+  condition_columns:
+  - d_cons
+  - d_rigid
+  - d_life
+  - d_stab
+  prefix_column: matching
+  filename_pattern: '{prefix}_{component}.png'
+  split_column: train
+  normalized: false
+training:
+  epochs: 100
+  batch_size: 64
+  num_workers: 4
+  lr: 0.0001
+  eval_every: 10
+  check_every: 25
+  seed: 0
+paths:
+  output_dir: outputs/vqvae_toy/
+  samples_dir: samples/vqvae_toy/
+sampling:
+  num_samples: 1000
+  batch_sz: 8
+  guidance_scale: 2.0
+  mode: conditional
+  components:
+  - group_nc
+  - group_km

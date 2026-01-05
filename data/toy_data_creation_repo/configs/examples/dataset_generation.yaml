@@ -1,0 +1,118 @@
+# Dataset generation configuration example
+
+dataset:
+  name: "tire_benchmark_v1"
+  output_dir: "./datasets/tire_benchmark_v1"
+  num_samples: 100  # Adjust as needed
+
+  # Parameter sampling strategy
+  sampling:
+    strategy: "latin_hypercube"  # Options: "latin_hypercube", "random", "grid"
+    seed: 42
+
+  # Parameter ranges for randomization
+  parameter_ranges:
+    # Geometry parameters
+    y_top:
+      type: uniform
+      min: 6
+      max: 12
+
+    y_bottom:
+      type: uniform
+      min: 52
+      max: 60
+
+    w_belly:
+      type: uniform
+      min: 18
+      max: 30
+
+    w_bottom:
+      type: uniform
+      min: 12
+      max: 18
+
+    belly_position:
+      type: uniform
+      min: 0.35
+      max: 0.45
+
+    thickness_carcass:
+      type: uniform
+      min: 2
+      max: 6
+
+    thickness_crown:
+      type: uniform
+      min: 3
+      max: 8
+
+    thickness_flanks_bottom:
+      type: uniform
+      min: 1
+      max: 4
+
+    lip_rounding:
+      type: uniform
+      min: 2
+      max: 5
+
+    # Number of crown layers (discrete)
+    num_crown_layers:
+      type: choice
+      values: [1, 2]
+
+    # Material properties
+    E_carcass:
+      type: uniform
+      min: 0.8
+      max: 1.2
+
+    E_crown:
+      type: uniform
+      min: 0.6
+      max: 1.0
+
+    E_flanks:
+      type: uniform
+      min: 0.3
+      max: 0.7
+
+    rho_carcass:
+      type: uniform
+      min: 0.8
+      max: 1.2
+
+    rho_crown:
+      type: uniform
+      min: 1.0
+      max: 1.4
+
+    rho_flanks:
+      type: uniform
+      min: 0.6
+      max: 1.0
+
+  # What to generate
+  outputs:
+    save_images: true
+    save_components: true
+    save_deformed: true
+    image_format: "png"
+
+    deformation:
+      enabled: true
+      forces: [100, 200, 400]  # Apply these forces and save results
+
+  # Metrics to compute for each sample
+  metrics:
+    - vertical_stiffness
+    - mass
+    - performance_ratio
+
+  # Metadata format
+  metadata:
+    format: "csv"  # Options: "csv", "json"
+    include_params: true
+    include_metrics: true

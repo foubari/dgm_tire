@@ -1,0 +1,70 @@
+model:
+  type: vqvae
+  image_size:
+  - 64
+  - 32
+  channels: 5
+  cond_dim: 2
+  dim: 64
+  dim_mults:
+  - 1
+  - 2
+  - 4
+  latent_spatial:
+  - 16
+  - 8
+  latent_dim: 40
+  num_embeddings: 512
+  commitment_cost: 0.25
+  ema_decay: 0.99
+  codebook_reset_interval: 100
+  prior:
+    enabled: true
+    hidden_dim: 128
+    num_layers: 12
+    kernel_size: 3
+  cond_drop_prob: 0.1
+  reconstruction_loss: mse
+  perceptual_weight: 0.0
+data:
+  root_dir: data/epure
+  condition_csv: data/epure/performances.csv
+  component_dirs:
+  - group_nc
+  - group_km
+  - bt
+  - fpu
+  - tpc
+  condition_columns:
+  - width_px
+  - height_px
+  prefix_column: matching
+  filename_pattern: mdbk_{prefix}_{component}.png
+  split_column: train
+  normalized: false
+training:
+  epochs: 100
+  batch_size: 64
+  num_workers: 4
+  lr_vqvae: 0.0002
+  optimizer_vqvae: adam
+  train_prior_after_epoch: 500
+  lr_prior: 0.0001
+  optimizer_prior: adam
+  eval_every: 10
+  check_every: 25
+  seed: 0
+paths:
+  output_dir: outputs/vqvae/
+  samples_dir: samples/vqvae/
+sampling:
+  num_samples: 1000
+  batch_sz: 8
+  temperature: 1.0
+  top_k: 100
+  guidance_scale: 2.0
+  mode: conditional
+  components:
+  - fpu
+  - group_nc
+  - group_km
