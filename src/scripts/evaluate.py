@@ -111,15 +111,26 @@ def main():
         runs_to_evaluate = find_all_runs(args.model, args.dataset)
     elif args.seeds:
         seeds = [int(s) for s in args.seeds.split(',')]
-        all_runs = find_all_runs(args.model, args.dataset)
-        # Filter by seed in folder name
-        runs_to_evaluate = [
-            r for r in all_runs
-            if any(f"seed{s}" in r.name or f"seed_{s}" in r.name for s in seeds)
-        ]
-        if not runs_to_evaluate:
-            # If no seed-specific folders, just take first N runs
-            runs_to_evaluate = all_runs[:len(seeds)]
+
+        # Try to find run_seed folders (symlinks on Unix or actual folders)
+        suffix = "_toy" if args.dataset == "toy" else ""
+        base_dir = Path("outputs") / f"{args.model}{suffix}"
+
+        if base_dir.exists():
+            # First, try finding run_seed folders
+            seed_folders = [base_dir / f"run_seed{s}" for s in seeds]
+            if all(f.exists() for f in seed_folders):
+                runs_to_evaluate = seed_folders
+            else:
+                # Fallback: use timestamp folders in chronological order
+                all_runs = find_all_runs(args.model, args.dataset)
+                # Sort by modification time (oldest first)
+                all_runs = sorted(all_runs, key=lambda d: d.stat().st_mtime)
+                # Take first N runs matching number of seeds
+                runs_to_evaluate = all_runs[:len(seeds)]
+        else:
+            print(f"ERROR: Output directory not found: {base_dir}")
+            sys.exit(1)
     else:
         print("ERROR: Must specify --run, --all-runs, or --seeds")
         sys.exit(1)
