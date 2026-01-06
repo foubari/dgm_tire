@@ -99,6 +99,41 @@ def parse_args():
     return parser.parse_args()
 
 
+def find_checkpoint_in_dir(run_dir: Path) -> Optional[Path]:
+    """Find best checkpoint in run directory with priority order.
+
+    Priority:
+    1. checkpoint_100.pt (final epoch)
+    2. checkpoint_best.pt (if exists)
+    3. Latest checkpoint_{N}.pt
+    """
+    check_dir = run_dir / "check"
+    if not check_dir.exists():
+        return None
+
+    # Priority 1: checkpoint_100.pt
+    checkpoint_100 = check_dir / "checkpoint_100.pt"
+    if checkpoint_100.exists():
+        return checkpoint_100
+
+    # Priority 2: checkpoint_best.pt
+    checkpoint_best = check_dir / "checkpoint_best.pt"
+    if checkpoint_best.exists():
+        return checkpoint_best
+
+    # Priority 3: Latest checkpoint
+    checkpoints = list(check_dir.glob("checkpoint_*.pt"))
+    if checkpoints:
+        def extract_epoch(path):
+            try:
+                return int(path.stem.split('_')[1])
+            except:
+                return 0
+        return max(checkpoints, key=extract_epoch)
+
+    return None
+
+
 def main():
     args = parse_args()
 
@@ -145,6 +180,12 @@ def main():
     all_results = []
 
     for run_dir in runs_to_evaluate:
+        # Verify checkpoint exists
+        checkpoint_file = find_checkpoint_in_dir(run_dir)
+        if not checkpoint_file or not checkpoint_file.exists():
+            print(f"\nWARNING: No valid checkpoint found for {run_dir.name}, skipping...")
+            continue
+
         # Trouver samples directory
         samples_dir = find_samples_dir(args.model, args.dataset, run_dir.name)
 
@@ -155,6 +196,7 @@ def main():
 
         print(f"\n{'='*70}")
         print(f"Evaluating run: {run_dir.name}")
+        print(f"  Checkpoint: {checkpoint_file.name}")
         print(f"  Samples: {samples_dir}")
         print(f"{'='*70}")
 

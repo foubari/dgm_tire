@@ -4,7 +4,7 @@ model:
   - 64
   - 32
   channels: 5
-  cond_dim: 2
+  cond_dim: 4  # Must match condition_columns count
   latent_dim: 32
   nf: 32
   nf_max: 256

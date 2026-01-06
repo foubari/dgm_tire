@@ -168,27 +168,59 @@ class Pipeline:
         return config_file
 
     def get_checkpoint_path(self, model: str, seed: int) -> Path:
-        """Get checkpoint path for model and seed (Windows-compatible)."""
+        """Get checkpoint path for model and seed (Windows-compatible).
+
+        Looks for checkpoints in priority order:
+        1. checkpoint_100.pt (final epoch)
+        2. checkpoint_best.pt (if exists - GMRF-MVAE, VAE)
+        3. Latest checkpoint_{N}.pt
+        """
         suffix = "_toy" if self.dataset == "toy" else ""
         output_base = Path("outputs") / f"{model}{suffix}"
+
+        # Determine run directory
+        run_dir = None
         symlink_name = output_base / f"run_seed{seed}"
 
-        # Try symlink first (works on Unix/admin Windows)
         if symlink_name.exists():
-            checkpoint_file = symlink_name / "check" / "checkpoint_best.pt"
-            return checkpoint_file
-
-        # Fallback for Windows: use stored path from state
-        if 'run_directories' in self.state:
+            run_dir = symlink_name
+        elif 'run_directories' in self.state:
             if model in self.state.get('run_directories', {}):
                 if seed in self.state['run_directories'][model]:
                     run_dir = Path(self.state['run_directories'][model][seed])
-                    checkpoint_file = run_dir / "check" / "checkpoint_best.pt"
-                    return checkpoint_file
 
-        # Last resort: return symlink path anyway (will fail gracefully)
-        checkpoint_file = symlink_name / "check" / "checkpoint_best.pt"
-        return checkpoint_file
+        if not run_dir or not run_dir.exists():
+            # Fallback: return best guess
+            return symlink_name / "check" / "checkpoint_100.pt"
+
+        check_dir = run_dir / "check"
+        if not check_dir.exists():
+            return run_dir / "check" / "checkpoint_100.pt"
+
+        # Priority 1: checkpoint_100.pt (final epoch)
+        checkpoint_100 = check_dir / "checkpoint_100.pt"
+        if checkpoint_100.exists():
+            return checkpoint_100
+
+        # Priority 2: checkpoint_best.pt (GMRF-MVAE, VAE)
+        checkpoint_best = check_dir / "checkpoint_best.pt"
+        if checkpoint_best.exists():
+            return checkpoint_best
+
+        # Priority 3: Find latest checkpoint_{N}.pt
+        checkpoints = list(check_dir.glob("checkpoint_*.pt"))
+        if checkpoints:
+            # Extract epoch number and find max
+            def extract_epoch(path):
+                try:
+                    return int(path.stem.split('_')[1])
+                except:
+                    return 0
+            latest = max(checkpoints, key=extract_epoch)
+            return latest
+
+        # No checkpoint found, return expected path
+        return checkpoint_100
 
     def create_run_symlink(self, model: str, seed: int):
         """Create stable symlink for run directory."""
@@ -454,11 +486,18 @@ class Pipeline:
                     if self.train_model(model, seed):
                         self.create_run_symlink(model, seed)
 
-                        # Verify checkpoint
+                        # Verify checkpoint exists (any checkpoint, not just best/100)
                         checkpoint = self.get_checkpoint_path(model, seed)
                         if not checkpoint.exists():
-                            self.logger.error(f"Checkpoint not found after training: {checkpoint}")
-                            training_failed += 1
+                            # Check if check directory has ANY checkpoints
+                            check_dir = checkpoint.parent
+                            if not check_dir.exists() or not any(check_dir.glob("checkpoint_*.pt")):
+                                self.logger.error(f"No checkpoints found after training in: {check_dir}")
+                                training_failed += 1
+                            else:
+                                self.logger.info(f"Checkpoints exist in: {check_dir}")
+                        else:
+                            self.logger.info(f"Checkpoint found: {checkpoint.name}")
                     else:
                         training_failed += 1
 
