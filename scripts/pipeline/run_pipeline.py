@@ -31,8 +31,9 @@ class Colors:
 # All available models
 ALL_MODELS = [
     'ddpm', 'mdm', 'flow_matching',
-    'vae', 'gmrf_mvae', 'meta_vae',
-    'vqvae', 'wgan_gp', 'mmvaeplus'
+    'vae', 'gmrf_mvae',
+    'vqvae', 'wgan_gp', 'mmvaeplus',
+    'meta_vae'  # Meta-VAE at the end (requires more GPU memory)
 ]
 
 # Models that don't support inpainting

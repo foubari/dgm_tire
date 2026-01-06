@@ -193,6 +193,12 @@ def train_marginal_vae(
 
     # Load best decoder
     decoder.load_state_dict(torch.load(output_dir / f"marginal_decoder_{component_idx}.pt"))
+
+    # Free GPU memory (encoder and optimizer no longer needed)
+    del encoder
+    del optimizer
+    torch.cuda.empty_cache() if torch.cuda.is_available() else None
+
     return decoder
 
 
