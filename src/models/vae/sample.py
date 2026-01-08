@@ -84,10 +84,13 @@ def load_model(checkpoint_path: Path, config: dict, device: torch.device) -> Bet
     cond_dim = len(config['data'].get('condition_columns', [])) if use_conditioning else 0
 
     model = BetaVAE(
+        image_size=tuple(config['model']['image_size']),
         channels=num_components,
         latent_dim=config['model']['latent_dim'],
         nf=config['model']['nf'],
-        nf_max=config['model']['nf_max'],
+        nf_max_encoder=config['model'].get('nf_max_encoder'),
+        nf_max_decoder=config['model'].get('nf_max_decoder'),
+        nf_max=config['model'].get('nf_max'),  # Backward compatibility
         beta=config['model']['beta'],
         cond_dim=cond_dim,
         dropout_p=config['model']['dropout_p']
@@ -181,55 +184,43 @@ def sample_unconditional(
 
 def sample_conditional(
     model: BetaVAE,
-    config: dict,
-    num_samples: int,
+    test_loader,
     save_root: str,
     date_str: str,
     component_names: list,
-    device: torch.device,
-    batch_size: int = 64
+    device: torch.device
 ):
     """
-    Mode 2: Conditional sampling with specific conditions.
+    Mode 2: Conditional sampling with conditions from test set.
+
+    Generates samples for each test set example using its conditions.
     """
     out_root = os.path.join(save_root, date_str)
     os.makedirs(os.path.join(out_root, "full"), exist_ok=True)
     for cname in component_names:
         os.makedirs(os.path.join(out_root, cname), exist_ok=True)
 
-    print(f"\nGenerating {num_samples} conditional samples...")
-
-    # Load conditions from CSV
-    conditions_df = pd.read_csv(config['data']['condition_csv'])
-    condition_cols = config['data']['condition_columns']
-
-    # Sample random conditions from dataset
-    sampled_indices = np.random.choice(len(conditions_df), size=num_samples, replace=True)
-    conditions = conditions_df.iloc[sampled_indices][condition_cols].values
-    conditions = torch.tensor(conditions, dtype=torch.float32, device=device)
+    print(f"\nGenerating conditional samples for test set ({len(test_loader)} batches)...")
 
     n_done = 0
-    num_batches = (num_samples + batch_size - 1) // batch_size
 
     with torch.no_grad():
-        for i in tqdm(range(num_batches), desc="Sampling"):
-            start_idx = n_done
-            end_idx = min(start_idx + batch_size, num_samples)
-            batch_cond = conditions[start_idx:end_idx]
+        for batch_idx, batch_data in enumerate(tqdm(test_loader, desc="Conditional sampling")):
+            _, cond = batch_data  # We only need conditions, not the actual images
+            cond = cond.to(device)  # [B, cond_dim]
 
-            # Sample from prior
-            batch_sz = batch_cond.size(0)
+            # Sample from prior with test set conditions
+            batch_sz = cond.size(0)
             z = torch.randn(batch_sz, model.latent_dim, device=device)
-            # Note: decoder already applies sigmoid, no need to apply again
-            samples = model.decoder(z, batch_cond)  # [B, C, H, W]
+            samples = model.decoder(z, cond)  # [B, C, H, W]
 
             # Save samples
-            prefix = f"img{n_done:04d}"
-            save_component_images(samples, out_root, prefix, component_names)
+            for i in range(batch_sz):
+                prefix = f"img{n_done:04d}"
+                save_component_images(samples[i:i+1], out_root, prefix, component_names)
+                n_done += 1
 
-            n_done += batch_sz
-
-    print(f"\nDone – conditional samples saved under {out_root}")
+    print(f"\nDone – {n_done} conditional samples saved under {out_root}")
 
 
 def sample_inpainting(
@@ -422,9 +413,14 @@ def main():
         if not config['data'].get('normalized', False):
             print("ERROR: Conditional sampling requires normalized conditions in config")
             return
+
+        # Create test loader
+        test_loader = create_test_loader(config, args.batch_sz)
+
+        # Run conditional sampling with test set conditions
         sample_conditional(
-            model, config, args.num_samples, save_root, date_str,
-            component_names, device, args.batch_sz
+            model, test_loader, save_root, date_str,
+            component_names, device
         )
 
     elif args.mode == 'inpainting':
