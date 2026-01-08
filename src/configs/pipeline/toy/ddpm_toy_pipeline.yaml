@@ -30,7 +30,7 @@ data:
   split_column: train
   normalized: false
 training:
-  epochs: 100
+  epochs: 50
   batch_size: 32
   num_workers: 4
   lr: 0.00008

@@ -27,7 +27,7 @@ data:
   split_column: train
   normalized: true
 training:
-  epochs: 100
+  epochs: 50
   batch_size: 128
   num_workers: 0
   lr: 0.0002

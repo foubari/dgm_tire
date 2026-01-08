@@ -1,9 +1,9 @@
 model:
   type: mmvaeplus
   variant: mmvaeplus
-  latent_dim_w: 32
-  latent_dim_z: 32
-  latent_dim_u: 64
+  latent_dim_w: 4
+  latent_dim_z: 4
+  latent_dim_u: 8
   nf: 32
   nf_max: 512
   cond_dim: 2
@@ -30,7 +30,7 @@ data:
   normalized: true
 training:
   batch_size: 128
-  epochs: 250
+  epochs: 200
   lr: 0.001
   optimizer: adam
   amsgrad: true

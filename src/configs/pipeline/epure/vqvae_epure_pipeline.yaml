@@ -43,7 +43,7 @@ data:
   split_column: train
   normalized: true
 training:
-  epochs: 100
+  epochs: 200
   batch_size: 64
   num_workers: 4
   lr_vqvae: 0.0002

@@ -32,7 +32,7 @@ data:
   filename_pattern: '{prefix}.png'
   normalized: false
 training:
-  epochs: 100
+  epochs: 500
   batch_size: 64
   num_workers: 4
   lr: 0.00008
