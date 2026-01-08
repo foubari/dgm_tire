@@ -109,12 +109,25 @@ class ModelEvaluator:
         Returns:
             Dict avec toutes les métriques
         """
+        # Load num_parameters from saved config
+        import yaml
+        num_params = None
+        config_path = self.run_dir / 'config.yaml'
+        if config_path.exists():
+            try:
+                with open(config_path, 'r') as f:
+                    config = yaml.safe_load(f)
+                    num_params = config.get('model', {}).get('num_parameters', None)
+            except Exception as e:
+                print(f"[WARNING] Could not load num_parameters from config: {e}")
+
         results = {
             'model': self.model_name,
             'dataset': self.dataset_name,
             'run_dir': str(self.run_dir),
             'seed': self.seed,
             'split': split,
+            'num_parameters': num_params,
             'metrics': {}
         }
 

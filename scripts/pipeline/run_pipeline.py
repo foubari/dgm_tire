@@ -28,20 +28,21 @@ class Colors:
     BOLD = '\033[1m'
     RESET = '\033[0m'
 
-# All available models
+# All available models - VQVAE and WGAN-GP at the end
 ALL_MODELS = [
     'ddpm', 'mdm', 'flow_matching',
-    'vae', 'gmrf_mvae',
-    'vqvae', 'wgan_gp', 'mmvaeplus',
-    'meta_vae'  # Meta-VAE at the end (requires more GPU memory)
+    'vae', 'gmrf_mvae', 'meta_vae',
+    'mmvaeplus',
+    'vqvae', 'wgan_gp'  # Heavy models at the end
 ]
 
 # Models that don't support inpainting
 NO_INPAINTING_MODELS = ['mdm', 'wgan_gp']
 
-# Dataset components
+# Dataset components for CONDITIONAL and INPAINTING sampling
+# Only group_nc, group_km, fpu (NOT bt, tpc)
 DATASET_COMPONENTS = {
-    'epure': ['group_nc', 'group_km', 'bt', 'fpu', 'tpc'],
+    'epure': ['group_nc', 'group_km', 'fpu'],
     'toy': ['group_nc', 'group_km', 'fpu']
 }
 
@@ -117,8 +118,17 @@ class Pipeline:
     def __init__(self, args):
         self.args = args
         self.dataset = args.dataset
-        self.models = args.models if args.models else ALL_MODELS
+
+        # Models to process
+        models = args.models if args.models else ALL_MODELS
+        skip_models = args.skip_models if hasattr(args, 'skip_models') else []
+        self.models = [m for m in models if m not in skip_models]
+
+        # Seeds (only for training)
         self.seeds = args.seeds if args.seeds else [0, 1, 2]
+
+        # Run directory (for sampling specific run)
+        self.run_dir = args.run_dir if hasattr(args, 'run_dir') and args.run_dir else None
 
         # Initialize logging
         self.pipeline_id = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -148,6 +158,11 @@ class Pipeline:
         }
 
         self.state_file = self.log_dir / "state.json"
+
+        # Load run_directories from all previous pipelines (only if training is not skipped)
+        if not args.skip_training:
+            self._load_all_run_directories()
+
         self.save_state()
 
         self.logger.info(f"Pipeline initialized: {self.pipeline_id}")
@@ -158,6 +173,55 @@ class Pipeline:
         with open(self.state_file, 'w') as f:
             json.dump(self.state, f, indent=2)
 
+    def _load_all_run_directories(self):
+        """Load run_directories from all previous pipeline states."""
+        if 'run_directories' not in self.state:
+            self.state['run_directories'] = {}
+
+        pipeline_logs = Path("logs/pipeline")
+        if not pipeline_logs.exists():
+            return
+
+        # Get all state.json files sorted by modification time (most recent first)
+        state_files = sorted(
+            pipeline_logs.glob("*/state.json"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True
+        )
+
+        for state_file in state_files:
+            # Skip current state file
+            if state_file == self.state_file:
+                continue
+
+            try:
+                with open(state_file, 'r') as f:
+                    old_state = json.load(f)
+
+                if 'run_directories' not in old_state:
+                    continue
+
+                # Merge run_directories from old state
+                for model, seed_dict in old_state['run_directories'].items():
+                    if model not in self.state['run_directories']:
+                        self.state['run_directories'][model] = {}
+
+                    for seed, run_dir in seed_dict.items():
+                        # Only add if not already present and directory exists
+                        if seed not in self.state['run_directories'][model]:
+                            run_path = Path(run_dir)
+                            if run_path.exists():
+                                self.state['run_directories'][model][seed] = str(run_dir)
+            except:
+                continue
+
+        # Log what was loaded
+        if self.state['run_directories']:
+            self.logger.info("Loaded run_directories from previous pipelines:")
+            for model, seed_dict in self.state['run_directories'].items():
+                for seed, run_dir in seed_dict.items():
+                    self.logger.info(f"  {model} seed{seed}: {run_dir}")
+
     def get_config_path(self, model: str) -> Path:
         """Get config path for model."""
         config_dir = Path("src/configs/pipeline") / self.dataset
@@ -167,6 +231,59 @@ class Pipeline:
             raise FileNotFoundError(f"Config not found: {config_file}")
 
         return config_file
+
+    def discover_runs(self, model: str) -> List[Path]:
+        """Discover all timestamped runs for a model."""
+        suffix = "_toy" if self.dataset == "toy" else ""
+        output_base = Path("outputs") / f"{model}{suffix}"
+
+        if not output_base.exists():
+            return []
+
+        # Find all timestamped directories (format: YYYY-MM-DD_HH-MM-SS)
+        runs = sorted([
+            d for d in output_base.iterdir()
+            if d.is_dir() and d.name.startswith("20") and len(d.name) == 19
+        ])
+
+        return runs
+
+    def get_checkpoint_from_run(self, run_dir: Path) -> Path:
+        """Get checkpoint path from a run directory.
+
+        Looks for checkpoints in priority order:
+        1. checkpoint_100.pt (final epoch)
+        2. checkpoint_best.pt (if exists - GMRF-MVAE, VAE)
+        3. Latest checkpoint_{N}.pt
+        """
+        check_dir = run_dir / "check"
+
+        if not check_dir.exists():
+            raise FileNotFoundError(f"Checkpoint directory not found: {check_dir}")
+
+        # Priority 1: checkpoint_100.pt (final epoch)
+        checkpoint_100 = check_dir / "checkpoint_100.pt"
+        if checkpoint_100.exists():
+            return checkpoint_100
+
+        # Priority 2: checkpoint_best.pt (GMRF-MVAE, VAE)
+        checkpoint_best = check_dir / "checkpoint_best.pt"
+        if checkpoint_best.exists():
+            return checkpoint_best
+
+        # Priority 3: Find latest checkpoint_{N}.pt
+        checkpoints = list(check_dir.glob("checkpoint_*.pt"))
+        if checkpoints:
+            # Extract epoch number and find max
+            def extract_epoch(path):
+                try:
+                    return int(path.stem.split('_')[1])
+                except:
+                    return 0
+            latest = max(checkpoints, key=extract_epoch)
+            return latest
+
+        raise FileNotFoundError(f"No checkpoint found in {check_dir}")
 
     def get_checkpoint_path(self, model: str, seed: int) -> Path:
         """Get checkpoint path for model and seed (Windows-compatible).
@@ -190,9 +307,48 @@ class Pipeline:
                 if seed in self.state['run_directories'][model]:
                     run_dir = Path(self.state['run_directories'][model][seed])
 
+        # If not found in current state, try to load from previous pipeline states
         if not run_dir or not run_dir.exists():
-            # Fallback: return best guess
-            return symlink_name / "check" / "checkpoint_100.pt"
+            pipeline_logs = Path("logs/pipeline")
+            if pipeline_logs.exists():
+                # Get all state.json files sorted by modification time (most recent first)
+                state_files = sorted(
+                    pipeline_logs.glob("*/state.json"),
+                    key=lambda p: p.stat().st_mtime,
+                    reverse=True
+                )
+                for state_file in state_files:
+                    try:
+                        with open(state_file, 'r') as f:
+                            old_state = json.load(f)
+                            if 'run_directories' in old_state:
+                                if model in old_state.get('run_directories', {}):
+                                    if seed in old_state['run_directories'][model]:
+                                        run_dir = Path(old_state['run_directories'][model][seed])
+                                        if run_dir.exists():
+                                            self.logger.info(f"Found run directory from previous pipeline: {run_dir}")
+                                            break
+                    except:
+                        continue
+
+        if not run_dir or not run_dir.exists():
+            # Fallback: Find most recent timestamped directory
+            if output_base.exists():
+                timestamp_dirs = sorted([
+                    d for d in output_base.iterdir()
+                    if d.is_dir() and d.name.startswith("20")
+                ])
+                if timestamp_dirs:
+                    # Use the most recent directory
+                    run_dir = timestamp_dirs[-1]
+                    self.logger.warning(f"Using most recent run for {model} seed{seed}: {run_dir.name}")
+                else:
+                    # No directories found
+                    self.logger.error(f"No training directories found in {output_base}")
+                    return symlink_name / "check" / "checkpoint_100.pt"
+            else:
+                # Output directory doesn't exist
+                return symlink_name / "check" / "checkpoint_100.pt"
 
         check_dir = run_dir / "check"
         if not check_dir.exists():
@@ -345,26 +501,46 @@ class Pipeline:
 
             return False
 
-    def sample_mode(self, model: str, seed: int, mode: str, component: Optional[str] = None) -> bool:
+    def sample_mode(self, model: str, run_dir: Path, mode: str, component: Optional[str] = None, num_samples: Optional[int] = None) -> bool:
         """Sample from model in specific mode."""
-        checkpoint = self.get_checkpoint_path(model, seed)
-
-        if not checkpoint.exists():
-            self.logger.error(f"Checkpoint not found: {checkpoint}")
+        try:
+            checkpoint = self.get_checkpoint_from_run(run_dir)
+        except FileNotFoundError as e:
+            self.logger.error(f"Checkpoint not found in {run_dir}: {e}")
             return False
 
-        mode_str = f"{mode}" + (f"_{component}" if component else "")
-        self.logger.info(f"Sampling {model} seed{seed} - {mode_str}")
+        config_path = run_dir / 'config.yaml'
+        if not config_path.exists():
+            self.logger.error(f"Config not found: {config_path}")
+            return False
 
-        log_file = self.log_dir / "sampling" / f"{model}_seed{seed}_{mode_str}.log"
+        # Use provided num_samples or default
+        # For conditional and inpainting, num_samples=None means use full test set
+        if num_samples is None:
+            if mode == "unconditional":
+                num_samples = self.args.num_samples
+            else:
+                # For conditional/inpainting, use a large number that will be ignored
+                # (sample.py will use full test_loader)
+                num_samples = 10000
+
+        mode_str = f"{mode}" + (f"_{component}" if component else "")
+        samples_info = f"{num_samples} samples" if mode == "unconditional" else "test set size"
+        run_name = run_dir.name
+        self.logger.info(f"Sampling {model} ({run_name}) - {mode_str} ({samples_info})")
+
+        log_file = self.log_dir / "sampling" / f"{model}_{run_name}_{mode_str}.log"
+
+        batch_size = self.args.batch_size if hasattr(self.args, 'batch_size') else 64
 
         cmd = [
             sys.executable,
             f"src/models/{model}/sample.py",
             "--checkpoint", str(checkpoint),
+            "--config", str(config_path),
             "--mode", mode,
-            "--num_samples", str(self.args.num_samples),
-            "--batch_sz", "64"
+            "--num_samples", str(num_samples),
+            "--batch_sz", str(batch_size)
         ]
 
         if mode == "inpainting" and component:
@@ -378,32 +554,33 @@ class Pipeline:
             result = subprocess.run(cmd, stdout=f, stderr=subprocess.STDOUT)
 
         if result.returncode == 0:
-            self.logger.success(f"Sampling completed: {model} seed{seed} {mode_str}")
+            self.logger.success(f"Sampling completed: {model} ({run_name}) {mode_str}")
             return True
         else:
-            self.logger.error(f"Sampling failed: {model} seed{seed} {mode_str}")
+            self.logger.error(f"Sampling failed: {model} ({run_name}) {mode_str}")
             self.logger.error(f"See log: {log_file}")
-            self.state['failed']['sampling'].append(f"{model}_seed{seed}_{mode_str}")
+            self.state['failed']['sampling'].append(f"{model}_{run_name}_{mode_str}")
             self.save_state()
             return False
 
-    def sample_all_modes(self, model: str, seed: int) -> bool:
-        """Sample in all modes for a model."""
+    def sample_all_modes(self, model: str, run_dir: Path) -> bool:
+        """Sample in all modes for a model run."""
         success = True
+        components = DATASET_COMPONENTS[self.dataset]
+        run_name = run_dir.name
 
-        # Unconditional
-        if not self.sample_mode(model, seed, "unconditional"):
+        # Unconditional: 1000 samples
+        if not self.sample_mode(model, run_dir, "unconditional", num_samples=1000):
             success = False
 
-        # Conditional
-        if not self.sample_mode(model, seed, "conditional"):
+        # Conditional: use test set size (pass None to use test loader)
+        if not self.sample_mode(model, run_dir, "conditional", num_samples=None):
             success = False
 
-        # Inpainting (if supported)
+        # Inpainting (if supported): use test set size per component (pass None to use test loader)
         if model not in NO_INPAINTING_MODELS:
-            components = DATASET_COMPONENTS[self.dataset]
             for component in components:
-                if not self.sample_mode(model, seed, "inpainting", component):
+                if not self.sample_mode(model, run_dir, "inpainting", component, num_samples=None):
                     success = False
         else:
             self.logger.warning(f"{model} does not support inpainting, skipping")
@@ -510,21 +687,34 @@ class Pipeline:
 
         # Stage 2: Sampling
         if not self.args.skip_sampling:
-            self.logger.stage(f"SAMPLING ({len(self.models)} models × {len(self.seeds)} seeds × 3 modes)")
+            # Discover runs to sample
+            all_runs = []
+            for model in self.models:
+                if self.run_dir:
+                    # Specific run directory provided
+                    all_runs.append((model, self.run_dir))
+                else:
+                    # Discover all runs for this model
+                    runs = self.discover_runs(model)
+                    if not runs:
+                        self.logger.warning(f"No runs found for {model}, skipping sampling")
+                    for run in runs:
+                        all_runs.append((model, run))
+
+            self.logger.stage(f"SAMPLING ({len(all_runs)} model runs × 3 modes)")
 
             sampling_count = 0
             sampling_failed = 0
-            total_sampling = len(self.models) * len(self.seeds)
 
-            for model in self.models:
-                for seed in self.seeds:
-                    sampling_count += 1
-                    self.logger.info(f"[{sampling_count}/{total_sampling}] Sampling {model} seed{seed}")
+            for model, run_dir in all_runs:
+                sampling_count += 1
+                run_name = run_dir.name
+                self.logger.info(f"[{sampling_count}/{len(all_runs)}] Sampling {model} ({run_name})")
 
-                    if not self.sample_all_modes(model, seed):
-                        sampling_failed += 1
+                if not self.sample_all_modes(model, run_dir):
+                    sampling_failed += 1
 
-                    print()  # Spacing
+                print()  # Spacing
 
             self.logger.info(f"Sampling stage complete: {sampling_count - sampling_failed}/{sampling_count} succeeded")
             if sampling_failed > 0:
@@ -563,7 +753,15 @@ class Pipeline:
         print("=" * 80)
         print(f"Dataset: {self.dataset}")
         print(f"Models: {', '.join(self.models)}")
-        print(f"Seeds: {', '.join(map(str, self.seeds))}")
+
+        if not self.args.skip_training:
+            print(f"Seeds (training): {', '.join(map(str, self.seeds))}")
+
+        if not self.args.skip_sampling and self.run_dir:
+            print(f"Sampling run: {self.run_dir}")
+        elif not self.args.skip_sampling:
+            print(f"Sampling: Auto-discover all runs")
+
         print()
         print("Stages:")
         print(f"  - Training: {'SKIP' if self.args.skip_training else 'RUN'}")
@@ -621,16 +819,22 @@ def parse_args():
                        help='Dataset to use')
     parser.add_argument('--models', type=str,
                        help='Comma-separated list of models (default: all)')
+    parser.add_argument('--run-dir', type=str,
+                       help='Specific run directory to sample (e.g., outputs/ddpm/2026-01-07_02-10-13). If not specified, samples all discovered runs.')
     parser.add_argument('--seeds', type=str,
-                       help='Comma-separated list of seeds (default: 0,1,2)')
+                       help='Comma-separated list of seeds for TRAINING only (default: 0,1,2)')
     parser.add_argument('--num-samples', type=int, default=1000,
                        help='Number of samples to generate (default: 1000)')
+    parser.add_argument('--batch-size', type=int, default=64,
+                       help='Batch size for sampling (default: 64)')
     parser.add_argument('--skip-training', action='store_true',
                        help='Skip training stage')
     parser.add_argument('--skip-sampling', action='store_true',
                        help='Skip sampling stage')
     parser.add_argument('--skip-evaluation', action='store_true',
                        help='Skip evaluation stage')
+    parser.add_argument('--skip-models', type=str,
+                       help='Comma-separated list of models to skip')
     parser.add_argument('--dry-run', action='store_true',
                        help='Print commands without executing')
 
@@ -644,12 +848,29 @@ def parse_args():
             if model not in ALL_MODELS:
                 parser.error(f"Invalid model: {model}. Choose from: {', '.join(ALL_MODELS)}")
 
-    # Parse seeds
+    # Parse skip-models
+    if args.skip_models:
+        skip_models = [m.strip() for m in args.skip_models.split(',')]
+        # Validate
+        for model in skip_models:
+            if model not in ALL_MODELS:
+                parser.error(f"Invalid model in --skip-models: {model}. Choose from: {', '.join(ALL_MODELS)}")
+        args.skip_models = skip_models
+    else:
+        args.skip_models = []
+
+    # Parse seeds (only used for training)
     if args.seeds:
         try:
             args.seeds = [int(s.strip()) for s in args.seeds.split(',')]
         except ValueError:
             parser.error("Seeds must be comma-separated integers")
+
+    # Parse run-dir
+    if args.run_dir:
+        args.run_dir = Path(args.run_dir)
+        if not args.run_dir.exists():
+            parser.error(f"Run directory does not exist: {args.run_dir}")
 
     return args
 

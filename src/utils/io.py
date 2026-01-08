@@ -15,7 +15,7 @@ def save_component_images(
     prefix: str,
     component_names: List[str],
     threshold: float = 0.5,
-    save_grayscale: bool = True,
+    save_grayscale: bool = False,
 ):
     """
     Save stacked samples as individual component images.

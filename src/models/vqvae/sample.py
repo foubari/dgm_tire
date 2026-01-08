@@ -237,12 +237,14 @@ def sample_unconditional(vqvae, prior, save_root, date_str, component_names,
             
             # Decode
             samples = vqvae.decode(indices, cond=None)
-            
+
             # Ensure samples are in [0, 1] range
             samples = torch.clamp(samples, 0.0, 1.0)
-            
-            save_component_images(samples, out_root, f"img{n_done:04d}", component_names)
-            
+
+            # Save each sample individually with proper index
+            for i in range(b):
+                save_component_images(samples[i:i+1], out_root, f"img{n_done+i:04d}", component_names)
+
             n_done += b
             print(f"\r[{date_str}] Saved {n_done}/{n_samples}", end="", flush=True)
     
@@ -318,12 +320,14 @@ def sample_conditional(vqvae, prior, test_loader, save_root, date_str, component
             
             # Decode
             samples = vqvae.decode(indices, cond=cond)
-            
+
             # Ensure samples are in [0, 1] range
             samples = torch.clamp(samples, 0.0, 1.0)
-            
-            save_component_images(samples, out_root, f"img{batch_idx:04d}", component_names)
-            
+
+            # Save each sample individually with proper index
+            for i in range(B):
+                save_component_images(samples[i:i+1], out_root, f"img{n_done+i:04d}", component_names)
+
             n_done += B
             if verbose:
                 print(f"\r[{date_str}] Saved {n_done} samples", end="", flush=True)
@@ -363,6 +367,9 @@ def sample_inpainting(vqvae, prior, test_loader, save_root, date_str, component_
         print(f"\nConditional inpainting for model dated {date_str}")
         print(f"Processing {len(test_loader)} batches × {len(components)} components")
 
+    # Track samples saved per component
+    n_saved = {comp_name: 0 for comp_name in components}
+
     with torch.no_grad():
         total_batches = len(test_loader)
         for batch_idx, batch_data in enumerate(test_loader):
@@ -398,8 +405,8 @@ def sample_inpainting(vqvae, prior, test_loader, save_root, date_str, component_
 
                 # Save results
                 for n in range(B):
-                    prefix = f"img{batch_idx:04d}_{n:02d}"
-                    save_component_images(inpainted[n:n+1], os.path.join(out_root, comp_name), prefix, component_names)
+                    save_component_images(inpainted[n:n+1], os.path.join(out_root, comp_name), f"img{n_saved[comp_name]:04d}", component_names)
+                    n_saved[comp_name] += 1
 
             if verbose:
                 print(f"\r[{date_str}] Batch {batch_idx+1} done", end="", flush=True)

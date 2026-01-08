@@ -300,7 +300,9 @@ def main():
         dropout_p=config['model']['dropout_p']
     ).to(device)
 
-    print(f"\nModel parameters: {sum(p.numel() for p in model.parameters()):,}")
+    num_params = sum(p.numel() for p in model.parameters())
+    config['model']['num_parameters'] = num_params
+    print(f"\nModel parameters: {num_params:,}")
 
     # Train
     train(model, train_loader, config, device, output_dir)

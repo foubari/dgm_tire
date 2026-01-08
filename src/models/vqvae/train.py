@@ -455,6 +455,14 @@ def main():
         prior = prior.to(device)
         num_params_prior = count_parameters(prior)
         print(f"Prior parameters: {num_params_prior:,}")
+
+    # Add num_parameters to config
+    total_params = num_params_vqvae + (num_params_prior if prior else 0)
+    config['model']['num_parameters'] = {
+        'vqvae': num_params_vqvae,
+        'prior': num_params_prior if prior else 0,
+        'total': total_params
+    }
     
     # Create optimizers
     training_cfg = config['training']

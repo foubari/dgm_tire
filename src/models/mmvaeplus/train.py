@@ -191,9 +191,14 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
     check_dir = output_dir / 'check'
     check_dir.mkdir(exist_ok=True)
-    
+
     print(f"Output directory: {output_dir}")
-    
+
+    # Save config with num_parameters (will be added later)
+    import yaml
+    with open(output_dir / 'config.yaml', 'w') as f:
+        yaml.dump(config, f)
+
     # Load data
     print("Loading data...")
     data_cfg = config['data']
@@ -264,11 +269,16 @@ def main():
         K = config['training'].get('K', 1)
     
     model = MMVAEplusEpure(Params()).to(device)
-    
+
+    # Count parameters and add to config
+    num_params = sum(p.numel() for p in model.parameters())
+    config['model']['num_parameters'] = num_params
+
     print(f"Model: {model.modelName}")
     print(f"  Components: {len(model.vaes)}")
     print(f"  Latent dims: w={Params.latent_dim_w}, z={Params.latent_dim_z}, u={Params.latent_dim_u}")
     print(f"  Cond dim: {Params.cond_dim}")
+    print(f"  Total parameters: {num_params:,}")
     
     # Optimizer
     training_cfg = config['training']

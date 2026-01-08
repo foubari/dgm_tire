@@ -27,7 +27,7 @@ data:
   prefix_column: matching
   filename_pattern: mdbk_{prefix}_{component}.png
   split_column: train
-  normalized: false
+  normalized: true
 training:
   epochs: 100
   batch_size: 64

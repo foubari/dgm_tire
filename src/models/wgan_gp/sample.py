@@ -223,11 +223,13 @@ def sample_conditional(model, test_loader, save_root, date_str, component_names,
         os.makedirs(os.path.join(out_root, cname), exist_ok=True)
     
     model.to(device).eval()
-    
+
     print(f"\nConditional sampling for model dated {date_str}")
     print(f"  Guidance scale: {guidance_scale}")
     print(f"  Processing {len(test_loader)} batches")
-    
+
+    n_done = 0
+
     with torch.no_grad():
         for batch_idx, batch_data in enumerate(tqdm(test_loader, desc="Sampling")):
             if isinstance(batch_data, tuple) and len(batch_data) == 2:
@@ -252,8 +254,9 @@ def sample_conditional(model, test_loader, save_root, date_str, component_names,
             
             # Save samples
             for n in range(batch_size):
-                prefix = f"img{batch_idx:04d}_{n:02d}"
-                save_component_images(samples[n:n+1], out_root, prefix, component_names)
+                save_component_images(samples[n:n+1], out_root, f"img{n_done+n:04d}", component_names)
+
+            n_done += batch_size
     
     print(f"\nDone – all samples saved under {out_root}")
 

@@ -310,8 +310,9 @@ def main():
     )
     
     model = model.to(device)
-    
+
     num_params = count_parameters(model)
+    config['model']['num_parameters'] = num_params
     print(f"Model parameters: {num_params:,}")
     
     # Create optimizer

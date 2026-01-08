@@ -239,6 +239,11 @@ def train_meta_vae(
         cond_dim=cond_dim
     ).to(device)
 
+    # Count parameters and add to config
+    num_params = sum(p.numel() for p in model.parameters())
+    config['model']['num_parameters'] = num_params
+    print(f"Model parameters: {num_params:,}")
+
     optimizer = torch.optim.Adam(
         filter(lambda p: p.requires_grad, model.parameters()),
         lr=lr

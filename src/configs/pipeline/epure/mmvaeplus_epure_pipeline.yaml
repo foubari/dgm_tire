@@ -44,7 +44,7 @@ training:
   - 100
   - 150
   - 250
-  num_workers: 4
+  num_workers: 0
   seed: 42
   device: cuda
   check_every: 25

@@ -208,35 +208,31 @@ def sample_conditional(
     for cname in component_names:
         os.makedirs(os.path.join(out_root, cname), exist_ok=True)
 
-    print(f"\nGenerating {num_samples} conditional samples...")
+    # Create test loader to use real test set
+    test_loader = create_test_loader(config, batch_size)
+    actual_num_samples = len(test_loader.dataset)
 
-    # Load conditions from CSV
-    conditions_df = pd.read_csv(config['data']['condition_csv'])
-    condition_cols = config['data']['condition_columns']
-
-    # Sample random conditions from dataset
-    sampled_indices = np.random.choice(len(conditions_df), size=num_samples, replace=True)
-    conditions = conditions_df.iloc[sampled_indices][condition_cols].values
-    conditions = torch.tensor(conditions, dtype=torch.float32, device=device)
+    print(f"\nGenerating {actual_num_samples} conditional samples (test set size)...")
 
     n_done = 0
-    num_batches = (num_samples + batch_size - 1) // batch_size
 
     with torch.no_grad():
-        for i in tqdm(range(num_batches), desc="Sampling"):
-            start_idx = n_done
-            end_idx = min(start_idx + batch_size, num_samples)
-            batch_cond = conditions[start_idx:end_idx]
+        for batch_idx, batch_data in enumerate(tqdm(test_loader, desc="Sampling")):
+            x, cond = batch_data
+            if cond is not None:
+                cond = cond.to(device)
 
-            samples = model.sample(batch_cond.size(0), cond=batch_cond, device=device)
+            batch_sz = cond.size(0) if cond is not None else x.size(0)
+
+            samples = model.sample(batch_sz, cond=cond, device=device)
 
             # Save samples
             prefix = f"img{n_done:04d}"
             save_component_images(samples, out_root, prefix, component_names)
 
-            n_done += batch_cond.size(0)
+            n_done += batch_sz
 
-    print(f"\nDone – conditional samples saved under {out_root}")
+    print(f"\nDone – {n_done} conditional samples saved under {out_root}")
 
 
 def sample_inpainting(
@@ -273,6 +269,9 @@ def sample_inpainting(
         print(f"Preserving components: {components_to_preserve}")
         print(f"Processing {len(test_loader)} batches")
 
+    # Global counter for each preserved component
+    counters = {comp: 0 for comp in components_to_preserve}
+
     with torch.no_grad():
         for batch_idx, batch_data in enumerate(tqdm(test_loader, desc="Inpainting")):
             x, cond = batch_data
@@ -297,9 +296,10 @@ def sample_inpainting(
                 # Save results in preserve_comp subfolder
                 preserve_dir = os.path.join(out_root, preserve_comp)
                 for n in range(B):
-                    prefix = f"img{batch_idx:04d}"
+                    prefix = f"img{counters[preserve_comp]:04d}"
                     sample = recon[n:n+1]  # [1, C, H, W]
                     save_component_images(sample, preserve_dir, prefix, component_names)
+                    counters[preserve_comp] += 1
 
     if verbose:
         print(f"\nDone – inpainting samples saved under {out_root}")

@@ -187,12 +187,14 @@ def sample_unconditional(model, save_root, date_str, component_names, n_samples=
         while n_done < n_samples:
             b = min(batch_sz, n_samples - n_done)
             samples = model.sample(batch_size=b, cond=None, guidance_scale=0.0)  # (B, C, H, W) in [0, 1]
-            
+
             # Ensure samples are in [0, 1] range
             samples = torch.clamp(samples, 0.0, 1.0)
-            
-            save_component_images(samples, out_root, f"img{n_done:04d}", component_names)
-            
+
+            # Save each sample individually with proper index
+            for i in range(b):
+                save_component_images(samples[i:i+1], out_root, f"img{n_done+i:04d}", component_names)
+
             n_done += b
             print(f"\r[{date_str}] Saved {n_done}/{n_samples}", end="", flush=True)
     
@@ -265,12 +267,14 @@ def sample_conditional(model, test_loader, save_root, date_str, component_names,
             
             # Generate samples with conditions
             samples = model.sample(batch_size=B, cond=cond, guidance_scale=guidance_scale)
-            
+
             # Ensure samples are in [0, 1] range
             samples = torch.clamp(samples, 0.0, 1.0)
-            
-            save_component_images(samples, out_root, f"img{batch_idx:04d}", component_names)
-            
+
+            # Save each sample individually with proper index
+            for i in range(B):
+                save_component_images(samples[i:i+1], out_root, f"img{n_done+i:04d}", component_names)
+
             n_done += B
             if verbose:
                 print(f"\r[{date_str}] Saved {n_done} samples", end="", flush=True)
@@ -300,7 +304,10 @@ def sample_inpainting(model, test_loader, save_root, date_str, component_names, 
     if verbose:
         print(f"\nConditional inpainting for model dated {date_str}")
         print(f"Processing {len(test_loader)} batches × {len(components)} components")
-    
+
+    # Track samples saved per component
+    n_saved = {comp_name: 0 for comp_name in components}
+
     with torch.no_grad():
         total_batches = len(test_loader)
         for batch_idx, batch_data in enumerate(test_loader):
@@ -322,14 +329,14 @@ def sample_inpainting(model, test_loader, save_root, date_str, component_names, 
                 
                 # Inpaint
                 inpainted = model.inpaint(partial=images, mask=mask)
-                
+
                 if verbose:
                     print(" done")
-                
+
                 # Save results
                 for n in range(B):
-                    prefix = f"img{batch_idx:04d}_{n:02d}"
-                    save_component_images(inpainted[n:n+1], os.path.join(out_root, comp_name), prefix, component_names)
+                    save_component_images(inpainted[n:n+1], os.path.join(out_root, comp_name), f"img{n_saved[comp_name]:04d}", component_names)
+                    n_saved[comp_name] += 1
             
             if verbose:
                 print(f"\r[{date_str}] Batch {batch_idx+1} done", end="", flush=True)

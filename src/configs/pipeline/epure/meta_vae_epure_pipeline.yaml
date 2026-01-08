@@ -23,11 +23,11 @@ data:
   split_column: train
   normalized: true
 training:
-  marginal_epochs: 50
+  marginal_epochs: 25
   marginal_lr: 0.001
   epochs: 100
   batch_size: 128
-  num_workers: 4
+  num_workers: 0
   lr: 0.0005
   check_every: 25
   seed: 42

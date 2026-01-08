@@ -360,10 +360,20 @@ def main():
     num_params_encoder = count_parameters(encoder)
     num_params_generator = count_parameters(generator)
     num_params_critic = count_parameters(critic)
+    total_params = num_params_encoder + num_params_generator + num_params_critic
+
+    # Add num_parameters to config
+    config['model']['num_parameters'] = {
+        'encoder': num_params_encoder,
+        'generator': num_params_generator,
+        'critic': num_params_critic,
+        'total': total_params
+    }
+
     print(f"Encoder parameters: {num_params_encoder:,}")
     print(f"Generator parameters: {num_params_generator:,}")
     print(f"Critic parameters: {num_params_critic:,}")
-    print(f"Total parameters: {num_params_encoder + num_params_generator + num_params_critic:,}")
+    print(f"Total parameters: {total_params:,}")
     
     # Create optimizers
     training_cfg = config['training']

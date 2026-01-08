@@ -192,7 +192,11 @@ def train(config):
     # Model - Filter out 'type' from config (used by pipeline, not by model)
     model_cfg = {k: v for k, v in config['model'].items() if k != 'type'}
     model = BetaVAE(**model_cfg).to(device)
-    print(f"Model parameters: {sum(p.numel() for p in model.parameters())/1e6:.2f}M")
+
+    # Count parameters and add to config
+    num_params = sum(p.numel() for p in model.parameters())
+    config['model']['num_parameters'] = num_params
+    print(f"Model parameters: {num_params/1e6:.2f}M")
 
     # Optimizer
     optimizer = optim.AdamW(
@@ -211,18 +215,23 @@ def train(config):
     checkpoint_dir = output_dir / "check"
     checkpoint_dir.mkdir(exist_ok=True)
 
+    # Save config with num_parameters
+    import yaml
+    with open(output_dir / 'config.yaml', 'w') as f:
+        yaml.dump(config, f)
+
     print(f"Output directory: {output_dir}")
 
     best_loss = float('inf')
 
-    for epoch in range(config['training']['epochs']):
+    for epoch in range(1, config['training']['epochs'] + 1):
         # Train
         train_loss, train_recon, train_kl = train_epoch(
             model, train_loader, optimizer, epoch, config, device
         )
 
         # Eval
-        if (epoch + 1) % config['training'].get('eval_every', 10) == 0:
+        if epoch % config['training'].get('eval_every', 10) == 0:
             test_loss, test_recon, test_kl = eval_epoch(model, test_loader, device)
             print(f"\nEpoch {epoch} - Test Loss: {test_loss:.4f} (Recon: {test_recon:.4f}, KL: {test_kl:.4f})")
 
@@ -236,7 +245,7 @@ def train(config):
                 print(f"Saved best model (loss: {best_loss:.4f})")
 
         # Checkpoint
-        if (epoch + 1) % config['training'].get('check_every', 50) == 0:
+        if epoch % config['training'].get('check_every', 50) == 0:
             save_checkpoint(
                 model, optimizer, epoch, train_loss,
                 checkpoint_dir / f'checkpoint_{epoch}.pt'
