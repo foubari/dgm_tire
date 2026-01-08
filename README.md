@@ -173,7 +173,7 @@ python src/models/gmrf_mvae/sample.py \
 
 **Supported modes by model:**
 - All models: unconditional, conditional
-- Not supported: inpainting for MDM, WGAN-GP
+- Inpainting not supported: WGAN-GP
 
 ### Evaluation
 
@@ -240,5 +240,5 @@ Components are represented as grayscale images that can be combined and visualiz
 - **Checkpoints**: Saved every 25 epochs + best checkpoint (lowest validation loss)
 - **Rectangular Images**: EPURE uses 64x32, mirrored to 64x64 for visualization
 - **Conditional Sampling**: Uses actual test set conditions, not random sampling
-- **Inpainting**: Not supported by MDM and WGAN-GP (architecture constraints)
+- **Inpainting**: Not supported by WGAN-GP (architecture constraints)
 - **TOY Dataset**: Open-source benchmark for reproducibility (EPURE is private)
