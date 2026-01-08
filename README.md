@@ -17,6 +17,27 @@ Framework for training and evaluating 9 generative models on multi-component ima
 pip install -r requirements.txt
 ```
 
+### Toy Dataset Generation (Required for MDM/categorical models)
+
+The toy dataset must be generated before training MDM or other categorical models:
+
+```bash
+# Step 1: Generate toy images + performances.csv
+cd data/toy_epure
+python generate_toy_dataset.py
+
+# Step 2: Create categorical masks for MDM
+python create_categorical_masks_toy.py
+cd ../..
+```
+
+This generates:
+- **20,000 images** (train/test split)
+- **performances.csv** with conditions (width_px, height_px, etc.)
+- **Categorical masks** in `data/toy_epure/preprocessed/` (required for MDM)
+
+> **Note**: EPURE dataset preprocessing is already done. Only toy dataset needs generation.
+
 ### Full Training Pipeline (All Models)
 ```bash
 python scripts/pipeline/run_pipeline.py --dataset epure
@@ -36,6 +57,28 @@ python scripts/pipeline/run_pipeline.py --dataset epure --models ddpm,vae,gmrf_m
 ```bash
 python scripts/pipeline/run_pipeline.py --dataset epure --seeds 42,123,456
 ```
+
+### Custom Conditions
+
+All EPURE configs use **geometric conditions** by default (`width_px`, `height_px`).
+
+To use different conditions (e.g., `d_cons_norm`, `d_rigid_norm`, `d_life_norm`, `d_stab_norm`):
+
+**Option 1: Edit configs directly** (recommended)
+```bash
+# Edit src/configs/pipeline/epure/<model>_epure_pipeline.yaml
+# Change condition_columns and cond_dim (if applicable)
+```
+
+**Option 2: Create alternative configs**
+```bash
+# Copy and modify: gmrf_mvae_epure_pipeline_perf.yaml
+# Then train with: --config src/configs/.../gmrf_mvae_epure_pipeline_perf.yaml
+```
+
+Available condition columns in `performances.csv`:
+- Geometric: `width_px`, `height_px` (2 conditions)
+- Performance: `d_cons_norm`, `d_rigid_norm`, `d_life_norm`, `d_stab_norm` (4 conditions)
 
 ### Quick Validation (1 epoch)
 ```bash

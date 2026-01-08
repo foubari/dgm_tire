@@ -23,10 +23,8 @@ data:
   - fpu
   - tpc
   condition_columns:
-  - d_cons_norm
-  - d_rigid_norm
-  - d_life_norm
-  - d_stab_norm
+  - width_px
+  - height_px
   prefix_column: matching
   filename_pattern: 'mdbk_{prefix}_{component}.png'
   split_column: train

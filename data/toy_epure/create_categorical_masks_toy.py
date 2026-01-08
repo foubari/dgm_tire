@@ -15,7 +15,7 @@ from tqdm import tqdm
 from typing import Dict, List, Tuple
 
 # Configuration
-SOURCE_DIR = Path(r"C:\Users\fouad\Desktop\phd\FOUAD\EpureDGM\data\toy_epure")
+SOURCE_DIR = Path(__file__).parent  # Chemin relatif au script
 TARGET_DIR = SOURCE_DIR
 PREPROCESSED_DIR = TARGET_DIR / "preprocessed"
 

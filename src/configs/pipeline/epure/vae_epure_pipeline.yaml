@@ -2,13 +2,15 @@ model:
   type: vae
   image_size:
   - 64
-  - 32
+  - 32  # EPURE uses rectangular images (64 height x 32 width)
   channels: 5
-  cond_dim: 4  # Must match condition_columns count
+  cond_dim: 2  # Must match condition_columns count
   latent_dim: 32
-  nf: 32
-  nf_max: 256
-  beta: 4.0
+  nf: 72  # Base number of filters
+  nf_max: 1024  # Maximum filters
+  nf_max_encoder: 1024  # Encoder maximum filters
+  nf_max_decoder: 512  # Decoder maximum filters (half of encoder)
+  beta: 1.0  # KL divergence weight
   dropout_p: 0.1
 data:
   root_dir: data/epure
@@ -20,10 +22,8 @@ data:
   - fpu
   - tpc
   condition_columns:
-  - d_cons_norm
-  - d_rigid_norm
-  - d_life_norm
-  - d_stab_norm
+  - width_px
+  - height_px
   prefix_column: matching
   filename_pattern: 'mdbk_{prefix}_{component}.png'
   split_column: train
