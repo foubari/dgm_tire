@@ -3,7 +3,7 @@ model:
   image_size:
   - 64
   - 32
-  dim: 64
+  dim: 54
   dim_mults:
   - 1
   - 2
@@ -30,9 +30,9 @@ data:
   normalized: true
 training:
   epochs: 100
-  batch_size: 64
+  batch_size: 32
   num_workers: 4
-  lr: 0.0001
+  lr: 0.00008
   optimizer: adam
   ema_decay: 0.9999
   ema_update_every: 10

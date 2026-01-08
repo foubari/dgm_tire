@@ -3,13 +3,13 @@ model:
   image_size:
   - 64
   - 32
-  dim: 64
+  dim: 72
   dim_mults:
   - 1
   - 2
   - 4
   num_classes: 4
-  timesteps: 500
+  timesteps: 1000
   loss_type: vb_stochastic
   cond_drop_prob: 0.1
   objective: pred_v
@@ -35,7 +35,7 @@ training:
   epochs: 100
   batch_size: 64
   num_workers: 4
-  lr: 0.0001
+  lr: 0.00008
   eval_every: 10
   check_every: 25
   seed: 0

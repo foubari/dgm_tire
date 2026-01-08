@@ -235,26 +235,100 @@ class MultinomialDiffusion(torch.nn.Module):
     def p_sample_loop(self, shape, *, cond=None, guidance_scale=0.):
         """
         Full reverse diffusion sampling loop.
-        
+
         Args:
             shape: Shape tuple (batch_size, *self.shape)
             cond: Conditioning tensor or None
             guidance_scale: Guidance scale for CFG
-        
+
         Returns:
             Sampled x_0 as integer class indices
         """
         device = self.log_alpha.device
         b = shape[0]
-    
+
         log_x = self.log_sample_categorical(
             torch.zeros((b, self.num_classes) + self.shape, device=device)
         )
-    
+
         for i in tqdm(reversed(range(self.num_timesteps))):
             t = torch.full((b,), i, device=device, dtype=torch.long)
             log_x = self.p_sample(log_x, t, cond=cond, guidance_scale=guidance_scale)
         return log_onehot_to_index(log_x)
+
+    @torch.no_grad()
+    def inpaint(self, segmaps, component_idx, *, cond=None, guidance_scale=0., return_all_timesteps=False):
+        """
+        Inpaint segmentation map by preserving a specific component class.
+
+        Spatial + semantic inpainting: regenerates all regions except those
+        belonging to `component_idx`.
+
+        Args:
+            segmaps: (B, H, W) or (B, 1, H, W) - Original segmentation maps
+            component_idx: Component class index to preserve (0 to num_classes-1)
+            cond: (B, cond_dim) - Optional conditioning for CFG
+            guidance_scale: Guidance weight for CFG (0 = no guidance)
+            return_all_timesteps: Return intermediate steps
+
+        Returns:
+            inpainted: (B, H, W) - Inpainted segmentation indices
+            OR list of (B, H, W) if return_all_timesteps=True
+        """
+        # Handle dimensions
+        if segmaps.dim() == 4:
+            segmaps_2d = segmaps.squeeze(1)  # (B, H, W)
+        else:
+            segmaps_2d = segmaps  # Already (B, H, W)
+
+        B, H, W = segmaps_2d.shape
+        device = segmaps_2d.device
+
+        # 1. Create preservation mask
+        mask_preserve = (segmaps_2d == component_idx).float()  # (B, H, W)
+
+        # 2. Initialize with uniform distribution
+        uniform_logits = torch.zeros(
+            (B, self.num_classes, H, W),
+            device=device,
+            dtype=torch.float32
+        )
+        log_x = self.log_sample_categorical(uniform_logits)  # (B, num_classes, H, W)
+
+        # 3. Prepare preserved region in log-one-hot format
+        masked_indices = torch.where(
+            mask_preserve > 0,
+            component_idx * torch.ones_like(segmaps_2d),
+            torch.zeros_like(segmaps_2d)
+        ).long()
+
+        original_class_onehot = index_to_log_onehot(masked_indices, self.num_classes)
+        mask_expanded = mask_preserve.unsqueeze(1)  # (B, 1, H, W)
+
+        # 4. Storage for all timesteps
+        all_log_x = [log_x] if return_all_timesteps else None
+
+        # 5. Reverse diffusion loop
+        for i in tqdm(reversed(range(self.num_timesteps)), desc='Inpainting', total=self.num_timesteps):
+            t = torch.full((B,), i, device=device, dtype=torch.long)
+
+            # Sample with optional CFG
+            log_x = self.p_sample(log_x, t, cond=cond, guidance_scale=guidance_scale)
+
+            # Enforce preservation (except at last step)
+            if i < self.num_timesteps - 1:
+                log_x = torch.where(mask_expanded > 0, original_class_onehot, log_x)
+
+            if return_all_timesteps:
+                all_log_x.append(log_x)
+
+        # 6. Convert from log-one-hot to indices
+        final = log_onehot_to_index(log_x)  # (B, H, W)
+
+        if return_all_timesteps:
+            return [log_onehot_to_index(lx) for lx in all_log_x]
+        else:
+            return final
 
     def log_sample_categorical(self, logits):
         """Sample from categorical distribution using Gumbel-max trick."""

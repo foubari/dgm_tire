@@ -1,16 +1,18 @@
 model:
   type: mmvaeplus
+  variant: mmvaeplus
   image_size:
   - 64
   - 32
-  latent_dim: 4
-  hidden_dims:
-  - 32
-  - 64
-  - 128
-  - 256
-  beta: 4.0
-  cond_drop_prob: 0.1
+  latent_dim_w: 32
+  latent_dim_z: 32
+  latent_dim_u: 64
+  nf: 32
+  nf_max: 512
+  cond_dim: 2
+  priorposterior: Laplace
+  beta: 2.5
+  channels: 1
 data:
   root_dir: data/toy_epure
   condition_csv: data/toy_epure/performances.csv
@@ -28,13 +30,19 @@ data:
   split_column: train
   normalized: false
 training:
-  epochs: 100
+  epochs: 250
   batch_size: 128
-  num_workers: 4
-  lr: 0.0001
+  num_workers: 0
+  lr: 0.001
+  optimizer: adam
+  amsgrad: true
+  beta: 2.5
+  K: 1
+  objective: elbo
+  llik_scaling: 0.0
   eval_every: 10
   check_every: 25
-  seed: 0
+  seed: 42
 paths:
   output_dir: outputs/mmvaeplus_toy/
   samples_dir: samples/mmvaeplus_toy/
