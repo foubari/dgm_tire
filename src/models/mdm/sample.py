@@ -139,15 +139,16 @@ def load_model_from_checkpoint(checkpoint_path, config_path=None, device='cuda')
     return model, config, date_str
 
 
-def save_mask(mask, path, scale_for_visualization=True):
+def save_mask(mask, path, scale_for_visualization=True, background_class=5):
     """
-    Save segmentation mask as image.
+    Save segmentation mask as binary image (matches DDPM output format).
 
     Args:
         mask: Segmentation mask (categorical indices)
         path: Output path
-        scale_for_visualization: If True, scale indices to visible range
-                                 If False, save raw indices (will appear very dark)
+        scale_for_visualization: If True, binarize (background=0, foreground=255)
+                                 If False, save raw indices
+        background_class: Class index to treat as background (default: 5 for EPURE)
     """
     mask_np = mask.cpu().numpy() if isinstance(mask, torch.Tensor) else mask
 
@@ -164,31 +165,11 @@ def save_mask(mask, path, scale_for_visualization=True):
         raise ValueError(f"Expected 2D mask, got shape {mask_np.shape}")
 
     if scale_for_visualization:
-        # Scale categorical indices for visibility
-        # Class 0 (background) stays 0 (black)
-        # Other classes scaled to visible range [50, 255]
-        # For num_classes=6: [0,1,2,3,4,5] -> [0, 50, 100, 150, 200, 255]
-        unique_classes = np.unique(mask_np)
-        num_classes = len(unique_classes)
-
-        if num_classes > 1 and unique_classes.max() > 0:
-            # Create output array
-            scaled = np.zeros_like(mask_np, dtype=np.uint8)
-
-            # Background (0) stays black
-            scaled[mask_np == 0] = 0
-
-            # Scale other classes to [50, 255]
-            non_zero_classes = unique_classes[unique_classes > 0]
-            if len(non_zero_classes) > 0:
-                for idx, cls in enumerate(non_zero_classes):
-                    # Map to range [50, 255]
-                    value = int(50 + (idx * (255 - 50) / max(1, len(non_zero_classes) - 1)))
-                    scaled[mask_np == cls] = value
-
-            mask_np = scaled
-        else:
-            mask_np = mask_np.astype(np.uint8)
+        # Binary output (matches DDPM format):
+        # Background class -> 0 (black)
+        # All other classes -> 255 (white)
+        binary = np.where(mask_np == background_class, 0, 255).astype(np.uint8)
+        mask_np = binary
     else:
         mask_np = mask_np.astype(np.uint8)
 
