@@ -3,14 +3,18 @@
 model:
   type: gmrf_mvae
   num_components: 3
-  latent_dim: 4      # ICTAI alignment (scaled for toy): 16 -> 4
-  nf: 32             # ICTAI alignment: 64 -> 32
-  nf_max: 512        # Now actively used with capping
-  hidden_dim: 128    # ICTAI alignment: 256 -> 128
+  latent_dim: 4              # ICTAI alignment (scaled for toy): 16 -> 4
+  nf: 32                     # ICTAI alignment: 64 -> 32
+  nf_max: 512                # For backward compatibility (use_resnet=False)
+  nf_max_e: 512              # Encoder max filters (ResNet mode)
+  nf_max_d: 256              # Decoder max filters (ResNet mode)
+  hidden_dim: 128            # ICTAI alignment: 256 -> 128
   n_layers: 2
-  beta: 1.0          # Already aligned
+  beta: 1.0                  # Already aligned
+  diagonal_transf: 'softplus'  # For ResNet mode
   cond_dim: 2
-  dropout_p: 0.1
+  dropout_p: 0.0             # ICTAI original: no dropout
+  use_resnet: false          # TEST: false first to verify backward compatibility
 
 data:
   root_dir: "data/toy_epure"
@@ -30,6 +34,11 @@ training:
   eval_every: 1
   check_every: 1
   seed: 42
+
+  # Loss configuration (not used yet with use_resnet=false)
+  recon_loss: 'mse'          # Will change to 'split_l1_mse' after testing
+  alpha_mse: 0.5
+  recon_weights: null        # Will add [0.5, 0.5, 1] after testing
 
 paths:
   output_dir: "outputs/gmrf_mvae_toy/"

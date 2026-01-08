@@ -97,20 +97,20 @@ def train(
 
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
-    # Progressive masking
-    warmup_epochs = config['training'].get('mask_warmup_epochs', 20)
-    max_mask_prob = config['training'].get('max_mask_prob', 0.7)
+    # Loss configuration (ICTAI alignment)
+    recon_loss_type = config['training'].get('recon_loss', 'mse')
+    alpha_mse = config['training'].get('alpha_mse', 0.5)
+    recon_weights = config['training'].get('recon_weights', None)
+
+    print(f"Loss configuration:")
+    print(f"  - recon_loss: {recon_loss_type}")
+    print(f"  - alpha_mse: {alpha_mse}")
+    print(f"  - recon_weights: {recon_weights}")
 
     best_loss = float('inf')
 
     for epoch in range(epochs):
         model.train()
-
-        # Compute mask probability
-        if epoch < warmup_epochs:
-            mask_prob = ((epoch / warmup_epochs) ** 0.5) * max_mask_prob
-        else:
-            mask_prob = max_mask_prob
 
         total_loss = 0
         total_recon = 0
@@ -125,24 +125,16 @@ def train(
 
             B, C = x.size(0), x.size(1)
 
-            # Create random mask for component-level masking
-            mask = torch.ones(B, C, device=device)
-            if mask_prob > 0:
-                for i in range(B):
-                    if torch.rand(1).item() < mask_prob:
-                        # Keep ONE random component, zero others
-                        keep_idx = torch.randint(0, C, (1,)).item()
-                        mask[i] = 0
-                        mask[i, keep_idx] = 1
+            # Forward pass (NO MASKING - ICTAI alignment)
+            recon, mu_list, logvar_list = model(x, cond)
 
-            # Apply mask to input
-            masked_x = x * mask.view(B, C, 1, 1)
-
-            # Forward pass
-            recon, mu_list, logvar_list = model(masked_x, cond)
-
-            # Loss
-            loss, recon_loss, kl_loss = model.loss_function(recon, x, mu_list, logvar_list)
+            # Loss with ICTAI parameters
+            loss, recon_loss, kl_loss = model.loss_function(
+                recon, x, mu_list, logvar_list,
+                recon_weights=recon_weights,
+                loss_type=recon_loss_type,
+                alpha_mse=alpha_mse
+            )
 
             # Backward
             optimizer.zero_grad()
@@ -157,14 +149,13 @@ def train(
                 'loss': loss.item(),
                 'recon': recon_loss.item(),
                 'kl': kl_loss.item(),
-                'mask_p': mask_prob
             })
 
         avg_loss = total_loss / len(train_loader)
         avg_recon = total_recon / len(train_loader)
         avg_kl = total_kl / len(train_loader)
 
-        print(f"Epoch {epoch+1}/{epochs} - Loss: {avg_loss:.4f} (Recon: {avg_recon:.4f}, KL: {avg_kl:.4f}), Mask prob: {mask_prob:.3f}")
+        print(f"Epoch {epoch+1}/{epochs} - Loss: {avg_loss:.4f} (Recon: {avg_recon:.4f}, KL: {avg_kl:.4f})")
 
         # Save checkpoint
         if (epoch + 1) % config['training'].get('check_every', 10) == 0:
@@ -292,12 +283,16 @@ def main():
         num_components=num_components,
         latent_dim=config['model']['latent_dim'],
         nf=config['model']['nf'],
-        nf_max=config['model']['nf_max'],
+        nf_max=config['model'].get('nf_max', 512),  # Backward compatibility
+        nf_max_e=config['model'].get('nf_max_e', 512),  # Encoder max filters
+        nf_max_d=config['model'].get('nf_max_d', 256),  # Decoder max filters
         hidden_dim=config['model']['hidden_dim'],
         n_layers=config['model']['n_layers'],
         beta=config['model']['beta'],
+        diagonal_transf=config['model'].get('diagonal_transf', 'softplus'),
         cond_dim=cond_dim,
-        dropout_p=config['model']['dropout_p']
+        dropout_p=config['model'].get('dropout_p', 0.0),
+        use_resnet=config['model'].get('use_resnet', True),  # Default: True 
     ).to(device)
 
     num_params = sum(p.numel() for p in model.parameters())

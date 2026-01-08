@@ -5,12 +5,14 @@ For full implementation with covariance assembly, refer to ICTAI codebase.
 This version provides the core architecture with factorized approximation.
 """
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions import MultivariateNormal
 
 from .cov_model import OffDiagonalCov
+from .resnet_block import ResnetBlock, actvn
 
 
 class ComponentVAE(nn.Module):
@@ -97,6 +99,162 @@ class ComponentVAE(nn.Module):
         return recon
 
 
+class ComponentVAE_Resnet(nn.Module):
+    """
+    VAE for a single component - ResNet architecture (ICTAI alignment).
+
+    This implementation uses ResnetBlock with skip connections,
+    matching the ICTAI original exactly.
+    """
+
+    def __init__(
+        self,
+        latent_dim=4,
+        nf=32,
+        nf_max_e=512,
+        nf_max_d=256,
+        diagonal_transf="softplus",
+        cond_dim=0,
+    ):
+        super().__init__()
+        self.latent_dim = latent_dim
+        self.nf = nf
+        self.nf_max_e = nf_max_e
+        self.nf_max_d = nf_max_d
+        self.diagonal_transf = diagonal_transf
+
+        # Image size: 64x32 → 8x4 (3 downsampling layers)
+        dataSize = [1, 64, 32]  # EPURE format (height x width)
+        s0_h = self.s0_h = 8  # Final height
+        s0_w = self.s0_w = 4  # Final width
+        size = dataSize[1]  # Use height for nlayers calculation
+
+        # ENCODER
+        nlayers = int(np.log2(size / s0_h))  # 3 layers: 64→32→16→8
+        self.nf0_e = min(nf_max_e, nf * 2**nlayers)  # min(512, 32*8) = 256
+
+        # Initial conv: 1 → nf
+        self.conv_img_z = nn.Conv2d(1, nf, 3, padding=1)
+
+        # ResNet blocks with downsampling
+        blocks_z = [ResnetBlock(nf, nf)]
+
+        for i in range(nlayers):
+            nf0 = min(nf * 2**i, nf_max_e)
+            nf1 = min(nf * 2 ** (i + 1), nf_max_e)
+            blocks_z += [
+                nn.AvgPool2d(3, stride=2, padding=1),  # Downsample
+                ResnetBlock(nf0, nf1),
+            ]
+
+        self.resnet_z = nn.Sequential(*blocks_z)
+
+        # Output layers
+        enc_out_dim = self.nf0_e * s0_h * s0_w  # 256 * 8 * 4 = 8192
+        self.fc_mu_z = nn.Linear(enc_out_dim, latent_dim)
+        self.lambda_diag_layer = nn.Linear(enc_out_dim, latent_dim)
+        self.cov_layer = nn.Linear(enc_out_dim, latent_dim)  # For OffDiagonalCov
+
+        # DECODER
+        self.nf0_d = min(nf_max_d, nf * 2**nlayers)  # min(256, 32*8) = 256
+
+        # Conditioning MLP (optional)
+        if cond_dim > 0:
+            self.cond_mlp = nn.Sequential(
+                nn.Linear(cond_dim, 128), nn.GELU(), nn.Linear(128, 256)
+            )
+            dec_input_dim = latent_dim + 256
+        else:
+            self.cond_mlp = None
+            dec_input_dim = latent_dim
+
+        self.fc_dec = nn.Linear(dec_input_dim, self.nf0_d * s0_h * s0_w)
+
+        # ResNet blocks with upsampling
+        blocks_dec = []
+        for i in range(nlayers):
+            nf0 = min(nf * 2 ** (nlayers - i), nf_max_d)
+            nf1 = min(nf * 2 ** (nlayers - i - 1), nf_max_d)
+            blocks_dec += [
+                ResnetBlock(nf0, nf1),
+                nn.Upsample(scale_factor=2),  # Nearest-neighbor upsampling
+            ]
+
+        blocks_dec += [ResnetBlock(nf, nf)]
+
+        self.resnet_dec = nn.Sequential(*blocks_dec)
+        self.conv_img_dec = nn.Conv2d(nf, 1, 3, padding=1)
+
+    def encode(self, x):
+        """
+        Encode input to latent distribution.
+
+        Args:
+            x: (B, 1, 64, 32)
+
+        Returns:
+            mu_z: Mean (B, latent_dim)
+            lambda_z: Diagonal covariance matrix (B, latent_dim, latent_dim)
+            cov_emb: Covariance embedding for OffDiagonalCov (B, latent_dim)
+        """
+        out_z = self.conv_img_z(x)
+        out_z = self.resnet_z(out_z)
+        out_z = out_z.view(out_z.size(0), self.nf0_e * self.s0_h * self.s0_w)
+
+        mu_z = self.fc_mu_z(out_z)
+        cov_emb = self.cov_layer(out_z)
+
+        # Diagonal transformation
+        raw_diag = self.lambda_diag_layer(out_z)
+
+        if self.diagonal_transf == "softplus":
+            lambda_diag = F.softplus(raw_diag) + 1e-6
+        elif self.diagonal_transf == "relu":
+            lambda_diag = F.relu(raw_diag) + 1.0
+        elif self.diagonal_transf == "exp":
+            lambda_diag = torch.exp(raw_diag)
+        elif self.diagonal_transf == "square":
+            lambda_diag = torch.square(raw_diag)
+        elif self.diagonal_transf == "sig":
+            lambda_diag = torch.sigmoid(raw_diag)
+        else:
+            raise ValueError(f"Unknown diagonal_transf: {self.diagonal_transf}")
+
+        # Create diagonal matrix
+        lambda_z = torch.zeros(
+            out_z.size(0), self.latent_dim, self.latent_dim, device=out_z.device
+        )
+        lambda_z.diagonal(dim1=-2, dim2=-1).copy_(lambda_diag)
+
+        return mu_z, lambda_z, cov_emb
+
+    def decode(self, z, cond=None):
+        """
+        Decode latent to reconstruction.
+
+        Args:
+            z: (B, latent_dim)
+            cond: (B, cond_dim) or None
+
+        Returns:
+            recon: (B, 1, 64, 32)
+        """
+        if self.cond_mlp is not None:
+            if cond is not None:
+                cond_emb = self.cond_mlp(cond)
+            else:
+                cond_emb = torch.zeros(
+                    z.size(0), 256, device=z.device, dtype=z.dtype
+                )
+            z = torch.cat([z, cond_emb], dim=1)
+
+        out = self.fc_dec(z).view(-1, self.nf0_d, self.s0_h, self.s0_w)
+        out = self.resnet_dec(out)
+        out = self.conv_img_dec(actvn(out))
+
+        return out
+
+
 class GMRF_MVAE(nn.Module):
     """
     GMRF Multimodal VAE.
@@ -110,21 +268,48 @@ class GMRF_MVAE(nn.Module):
         num_components=5,
         latent_dim=16,
         nf=64,
-        nf_max=512,
+        nf_max=512,  # Backward compatibility (used when use_resnet=False)
+        nf_max_e=512,  # Encoder max filters (ResNet mode)
+        nf_max_d=256,  # Decoder max filters (ResNet mode)
         hidden_dim=256,
         n_layers=2,
         beta=1.0,
         cond_dim=2,
-        dropout_p=0.1
+        dropout_p=0.1,
+        diagonal_transf='softplus',  # For ResNet mode
+        use_resnet=True,  # ICTAI alignment: True for ResNet, False for simple Conv
     ):
         super().__init__()
         self.num_components = num_components
         self.latent_dim = latent_dim
         self.beta = beta
+        self.use_resnet = use_resnet
 
-        # Component VAEs
+        # Component VAEs - choose architecture
+        if use_resnet:
+            # ICTAI original: ResNet architecture
+            VAEClass = ComponentVAE_Resnet
+            vae_kwargs = {
+                'latent_dim': latent_dim,
+                'nf': nf,
+                'nf_max_e': nf_max_e,
+                'nf_max_d': nf_max_d,
+                'diagonal_transf': diagonal_transf,
+                'cond_dim': cond_dim,
+            }
+        else:
+            # Fallback: Simple Conv2d architecture
+            VAEClass = ComponentVAE
+            vae_kwargs = {
+                'latent_dim': latent_dim,
+                'nf': nf,
+                'nf_max': nf_max,
+                'dropout_p': dropout_p,
+                'cond_dim': cond_dim,
+            }
+
         self.component_vaes = nn.ModuleList([
-            ComponentVAE(latent_dim, nf, nf_max, dropout_p, cond_dim)
+            VAEClass(**vae_kwargs)
             for _ in range(num_components)
         ])
 
@@ -156,7 +341,20 @@ class GMRF_MVAE(nn.Module):
 
         # Encode each component
         for i, vae in enumerate(self.component_vaes):
-            mu_i, logvar_i, cov_emb_i = vae.encode(x[:, i:i+1])
+            encoded = vae.encode(x[:, i:i+1])
+
+            if self.use_resnet:
+                # ComponentVAE_Resnet returns: mu, lambda_z (matrix), cov_emb
+                mu_i, lambda_z_i, cov_emb_i = encoded
+                # Convert lambda_z (diagonal matrix) to logvar (vector)
+                # lambda_z is diagonal, so extract diagonal elements
+                lambda_diag = lambda_z_i.diagonal(dim1=-2, dim2=-1)  # (B, latent_dim)
+                # logvar = log(lambda_diag)
+                logvar_i = torch.log(lambda_diag + 1e-8)
+            else:
+                # ComponentVAE returns: mu, logvar, cov_emb
+                mu_i, logvar_i, cov_emb_i = encoded
+
             mus.append(mu_i)
             logvars.append(logvar_i)
             cov_embs.append(cov_emb_i)
@@ -171,20 +369,72 @@ class GMRF_MVAE(nn.Module):
 
         return recons, mus, logvars
 
-    def loss_function(self, recons, x, mus, logvars):
+    def loss_function(self, recons, x, mus, logvars,
+                      recon_weights=None, loss_type='mse', alpha_mse=0.5):
         """
-        Simplified ELBO with factorized KL.
+        ELBO loss with support for multiple reconstruction loss types.
+
+        Supports two modes:
+        1. Simplified factorized KL (default, use_resnet=False)
+        2. ICTAI mode with split_l1_mse (use_resnet=True)
+
+        Args:
+            recons: List of reconstructions
+            x: Input tensor (B, num_components, H, W)
+            mus: List of means
+            logvars: List of logvars
+            recon_weights: Per-component weights (for ICTAI mode)
+            loss_type: 'mse', 'l1', 'l1_mse', 'split_l1_mse', 'bce'
+            alpha_mse: Weight for MSE in l1_mse mode
 
         Returns:
             loss, recon_loss, kl_loss
         """
         B = x.size(0)
 
-        # Reconstruction loss (per component)
-        recon_loss = 0
-        for i, recon_i in enumerate(recons):
-            recon_loss += F.mse_loss(recon_i, x[:, i:i+1], reduction='sum')
-        recon_loss = recon_loss / B
+        # Reconstruction loss
+        if recon_weights is not None and loss_type != 'mse':
+            # ICTAI mode: use weighted reconstruction loss
+            data_list = [x[:, i:i+1] for i in range(self.num_components)]
+
+            if loss_type == 'split_l1_mse':
+                # ICTAI original formula
+                mse_term = sum(
+                    w * F.mse_loss(recon, d)
+                    for w, recon, d in zip(recon_weights, recons, data_list)
+                )
+                l1_term = sum(
+                    (1 - w) * F.l1_loss(recon, d)
+                    for w, recon, d in zip(recon_weights, recons, data_list)
+                )
+                recon_loss = mse_term + l1_term
+            elif loss_type == 'l1':
+                recon_loss = sum(
+                    w * F.l1_loss(recon, d)
+                    for w, recon, d in zip(recon_weights, recons, data_list)
+                )
+            elif loss_type == 'l1_mse':
+                recon_loss = sum(
+                    w * (alpha_mse * F.mse_loss(recon, d) + (1 - alpha_mse) * F.l1_loss(recon, d))
+                    for w, recon, d in zip(recon_weights, recons, data_list)
+                )
+            elif loss_type == 'bce':
+                recon_loss = sum(
+                    w * F.binary_cross_entropy_with_logits(recon, d)
+                    for w, recon, d in zip(recon_weights, recons, data_list)
+                )
+            else:
+                # Default MSE with weights
+                recon_loss = sum(
+                    w * F.mse_loss(recon, x[:, i:i+1])
+                    for i, (w, recon) in enumerate(zip(recon_weights, recons))
+                )
+        else:
+            # Simple mode: MSE without weights (backward compatibility)
+            recon_loss = 0
+            for i, recon_i in enumerate(recons):
+                recon_loss += F.mse_loss(recon_i, x[:, i:i+1], reduction='sum')
+            recon_loss = recon_loss / B
 
         # KL divergence (factorized)
         kl_loss = 0

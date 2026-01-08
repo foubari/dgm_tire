@@ -3,7 +3,7 @@ model:
   image_size:
   - 64
   - 32
-  latent_dim: 256
+  latent_dim: 4
   hidden_dims:
   - 32
   - 64
