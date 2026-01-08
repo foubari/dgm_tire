@@ -1,4 +1,4 @@
-# EpureDGM - Deep Generative Models for Multi-Component Images
+# EpureDGM - Deep Generative Models And Tire Architecture
 
 Framework for training and evaluating 9 generative models on multi-component image datasets.
 
@@ -7,8 +7,6 @@ Framework for training and evaluating 9 generative models on multi-component ima
 **Diffusion Models**: DDPM, MDM, Flow Matching
 **VAE Models**: VAE, GMRF-MVAE, Meta-VAE, VQVAE, MMVAEplus
 **GAN Models**: WGAN-GP
-
-> **Note**: MMVAEplus and Meta-VAE training incomplete (multiprocessing issues on Windows, marginal decoders already trained for seed 1)
 
 ## Datasets
 
