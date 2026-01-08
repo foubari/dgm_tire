@@ -13,24 +13,19 @@ Framework for training and evaluating 9 generative models on multi-component ima
 ## Datasets
 
 ### EPURE Dataset (Private)
-The EPURE dataset contains proprietary tire cross-section images with **5 components**:
-- `group_nc` (carcass) - Red in visualizations
-- `group_km` (crown) - Blue in visualizations
-- `bt` (belt) - Yellow in visualizations
-- `fpu` (sidewalls) - Green in visualizations
-- `tpc` (tread pattern) - Cyan in visualizations
+The EPURE dataset contains proprietary tire cross-section images with **5 components**: sidewall, crown, carcass, and two additional structural layers.
 
 **Format**: 64x32 grayscale images with 2D conditions (width_px, height_px) or 4D performance metrics
 
 > **Note**: EPURE dataset is not included in this public repository due to proprietary constraints.
 
 ### Toy Dataset (Public Benchmark)
-An open-source benchmark dataset with **3 components** (group_nc, group_km, fpu) for reproducible experiments.
+An open-source benchmark dataset with **3 components** (sidewall, crown, carcass) representing a simplified tire cross-section for reproducible experiments.
 
 **Format**: 64x32 grayscale images, 20,000 samples (train/test split)
 
 ![Toy Dataset Samples](figures/toy_dataset_samples.png)
-*Figure: Toy dataset samples showing multi-component tire cross-sections. Each image is a color overlay of 3 components: carcass (red), crown (blue), sidewalls (green). Images are mirrored horizontally for square display (64x64).*
+*Figure: Toy dataset samples showing multi-component tire cross-sections. Each image is a color overlay of 3 components: carcass, crown, and sidewall. Images are mirrored horizontally for square display (64x64).*
 
 ## Quick Start
 
@@ -172,7 +167,7 @@ python src/models/vae/sample.py \
 python src/models/gmrf_mvae/sample.py \
   --checkpoint outputs/gmrf_mvae/run_seed0/check/checkpoint_best.pt \
   --mode inpainting \
-  --components fpu \
+  --components sidewall \
   --seed 42
 ```
 
@@ -232,12 +227,13 @@ epure_dgm_new/
 
 ## Component Naming Conventions
 
-Across datasets, components are named consistently:
-- **group_nc** = carcass (structural layer)
-- **group_km** = crown (top layer)
-- **fpu** = sidewalls (lateral reinforcement)
-- **bt** = belt (reinforcement layer, EPURE only)
-- **tpc** = tread pattern (contact layer, EPURE only)
+The datasets use tire cross-section components organized as follows:
+- **Carcass**: Structural layer providing overall tire shape
+- **Crown**: Top layer of the tire
+- **Sidewall**: Lateral reinforcement
+- Additional structural layers in the full EPURE dataset
+
+Components are represented as grayscale images that can be combined and visualized as color overlays.
 
 ## Technical Notes
 
