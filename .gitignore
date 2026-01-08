@@ -44,3 +44,20 @@ evaluation_cache/
 
 # Analysis outputs
 scripts/analysis_output/
+
+# Internal documentation (keep local only)
+WINDOWS_*.md
+TRAINING_ISSUES_FIXED.md
+FIX_WINDOWS_SYMLINK.md
+src/COMMANDES_*.md
+src/PLAN_VAE_IMPLEMENTATIONS.md
+src/WGAN_GP_IMPLEMENTATION_PLAN.md
+scripts/README_PERFORMANCES.md
+
+# Unused configs (keep only pipeline configs)
+src/configs/*_default.yaml
+src/configs/*_quick_test.yaml
+src/configs/*_toy_test.yaml
+src/configs/*_toy_full.yaml
+src/configs/*_epure_full.yaml
+src/configs/example_new_dataset.yaml
