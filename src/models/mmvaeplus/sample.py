@@ -17,6 +17,7 @@ import sys
 import pickle
 import torch
 import numpy as np
+import pandas as pd
 from pathlib import Path
 from tqdm import tqdm
 
@@ -117,24 +118,42 @@ def load_model_from_checkpoint(checkpoint_path, config_path=None, device='cuda')
     return model, config, date_str
 
 
-def sample_unconditional(model, n_samples, save_root, date_str, component_names, device='cuda'):
+def sample_unconditional(model, n_samples, save_root, date_str, component_names, config, device='cuda'):
     """
-    Unconditional sampling - generate samples without conditions.
+    Unconditional sampling - generate samples with random conditions from dataset.
+
+    Since the model was trained with conditioning, we sample random conditions
+    from the dataset to avoid the zero-embedding problem.
     """
     out_root = os.path.join(save_root, date_str)
     os.makedirs(os.path.join(out_root, "full"), exist_ok=True)
     for cname in component_names:
         os.makedirs(os.path.join(out_root, cname), exist_ok=True)
-    
+
     model.to(device).eval()
-    
+
     print(f"\nUnconditional sampling for model dated {date_str}")
-    print(f"  Generating {n_samples} samples")
-    
+    print(f"  Generating {n_samples} samples (with random conditions)")
+
+    # Load conditions from CSV and sample randomly
+    condition_csv = resolve_path(config['data']['condition_csv'])
+    condition_cols = config['data'].get('condition_columns', [])
+    num_components = len(component_names)
+
+    if condition_cols:
+        conditions_df = pd.read_csv(condition_csv)
+        sampled_indices = np.random.choice(len(conditions_df), size=n_samples, replace=True)
+        conditions = conditions_df.iloc[sampled_indices][condition_cols].values
+        conditions = torch.tensor(conditions, dtype=torch.float32, device=device)
+        # Create condition list for each modality (MMVAEplus expects list of conds)
+        cond_list = [conditions] * num_components
+    else:
+        cond_list = None
+
     # Generate samples
     with torch.no_grad():
-        generations = model.generate_unconditional(N=n_samples, cond=None)
-    
+        generations = model.generate_unconditional(N=n_samples, cond=cond_list)
+
     # Save samples
     # generations is a list of 5 tensors, each of shape (n_samples, 1, 64, 32)
     for n in range(n_samples):
@@ -144,7 +163,7 @@ def sample_unconditional(model, n_samples, save_root, date_str, component_names,
         sample_tensor = torch.stack([gen[n].squeeze(0) for gen in generations], dim=0)  # (5, 64, 32)
         sample_tensor = sample_tensor.unsqueeze(0)  # (1, 5, 64, 32) - add batch dimension
         save_component_images(sample_tensor, out_root, prefix, component_names)
-    
+
     print(f"\nDone – {n_samples} samples saved under {out_root}")
 
 
@@ -432,7 +451,7 @@ def main():
     if args.mode == 'unconditional':
         sample_unconditional(
             model, args.num_samples, str(save_root), date_str,
-            component_names, args.device
+            component_names, config, args.device
         )
     
     elif args.mode == 'inpainting':

@@ -159,17 +159,33 @@ def sample_unconditional(
     date_str: str,
     component_names: list,
     device: torch.device,
+    config: dict,
     batch_size: int = 64
 ):
     """
-    Mode 1: Unconditional sampling from prior.
+    Mode 1: Unconditional sampling from prior with random conditions from dataset.
+
+    Since the model was trained with conditioning, we sample random conditions
+    from the dataset to avoid the zero-embedding problem.
     """
     out_root = os.path.join(save_root, date_str)
     os.makedirs(os.path.join(out_root, "full"), exist_ok=True)
     for cname in component_names:
         os.makedirs(os.path.join(out_root, cname), exist_ok=True)
 
-    print(f"\nGenerating {num_samples} unconditional samples...")
+    print(f"\nGenerating {num_samples} unconditional samples (with random conditions)...")
+
+    # Load conditions from CSV and sample randomly
+    condition_csv = resolve_path(config['data']['condition_csv'])
+    condition_cols = config['data'].get('condition_columns', [])
+
+    if condition_cols:
+        conditions_df = pd.read_csv(condition_csv)
+        sampled_indices = np.random.choice(len(conditions_df), size=num_samples, replace=True)
+        conditions = conditions_df.iloc[sampled_indices][condition_cols].values
+        conditions = torch.tensor(conditions, dtype=torch.float32, device=device)
+    else:
+        conditions = None
 
     n_done = 0
     num_batches = (num_samples + batch_size - 1) // batch_size
@@ -177,7 +193,14 @@ def sample_unconditional(
     with torch.no_grad():
         for i in tqdm(range(num_batches), desc="Sampling"):
             batch_sz = min(batch_size, num_samples - n_done)
-            samples = model.sample(batch_sz, cond=None, device=device)  # [B, C, H, W]
+
+            # Get batch conditions
+            if conditions is not None:
+                batch_cond = conditions[n_done:n_done + batch_sz]
+            else:
+                batch_cond = None
+
+            samples = model.sample(batch_sz, cond=batch_cond, device=device)  # [B, C, H, W]
 
             # Save samples
             prefix = f"img{n_done:04d}"
@@ -416,7 +439,7 @@ def main():
     if args.mode == 'unconditional':
         sample_unconditional(
             model, args.num_samples, save_root, date_str,
-            component_names, device, args.batch_sz
+            component_names, device, config, args.batch_sz
         )
 
     elif args.mode == 'conditional':

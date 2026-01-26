@@ -164,17 +164,33 @@ def sample_unconditional(
     date_str: str,
     component_names: list,
     device: torch.device,
+    config: dict,
     batch_size: int = 64
 ):
     """
-    Mode 1: Unconditional sampling from prior.
+    Mode 1: Unconditional sampling from prior with random conditions from dataset.
+
+    Since the model was trained with conditioning, we sample random conditions
+    from the dataset to avoid the zero-embedding problem.
     """
     out_root = os.path.join(save_root, date_str)
     os.makedirs(os.path.join(out_root, "full"), exist_ok=True)
     for cname in component_names:
         os.makedirs(os.path.join(out_root, cname), exist_ok=True)
 
-    print(f"\nGenerating {num_samples} unconditional samples...")
+    print(f"\nGenerating {num_samples} unconditional samples (with random conditions)...")
+
+    # Load conditions from CSV and sample randomly
+    condition_csv = resolve_path(config['data']['condition_csv'])
+    condition_cols = config['data'].get('condition_columns', [])
+
+    if condition_cols:
+        conditions_df = pd.read_csv(condition_csv)
+        sampled_indices = np.random.choice(len(conditions_df), size=num_samples, replace=True)
+        conditions = conditions_df.iloc[sampled_indices][condition_cols].values
+        conditions = torch.tensor(conditions, dtype=torch.float32, device=device)
+    else:
+        conditions = None
 
     n_done = 0
     num_batches = (num_samples + batch_size - 1) // batch_size
@@ -182,7 +198,14 @@ def sample_unconditional(
     with torch.no_grad():
         for i in tqdm(range(num_batches), desc="Sampling"):
             batch_sz = min(batch_size, num_samples - n_done)
-            samples = model.sample(batch_sz, device, cond=None)  # [B, C, H, W]
+
+            # Get batch conditions
+            if conditions is not None:
+                batch_cond = conditions[n_done:n_done + batch_sz]
+            else:
+                batch_cond = None
+
+            samples = model.sample(batch_sz, device, cond=batch_cond)  # [B, C, H, W]
 
             # Save samples
             prefix = f"img{n_done:04d}"
@@ -195,51 +218,45 @@ def sample_unconditional(
 
 def sample_conditional(
     model: MetaVAE,
-    config: dict,
-    num_samples: int,
+    test_loader,
     save_root: str,
     date_str: str,
     component_names: list,
-    device: torch.device,
-    batch_size: int = 64
+    device: torch.device
 ):
     """
-    Mode 2: Conditional sampling with specific conditions.
+    Mode 2: Conditional sampling with conditions from test set.
+
+    Generates exactly len(test_set) samples using conditions from the test set.
     """
     out_root = os.path.join(save_root, date_str)
     os.makedirs(os.path.join(out_root, "full"), exist_ok=True)
     for cname in component_names:
         os.makedirs(os.path.join(out_root, cname), exist_ok=True)
 
-    print(f"\nGenerating {num_samples} conditional samples...")
+    print(f"\nGenerating conditional samples from test set ({len(test_loader.dataset)} samples)...")
 
-    # Load conditions from CSV
-    conditions_df = pd.read_csv(config['data']['condition_csv'])
-    condition_cols = config['data']['condition_columns']
-
-    # Sample random conditions from dataset
-    sampled_indices = np.random.choice(len(conditions_df), size=num_samples, replace=True)
-    conditions = conditions_df.iloc[sampled_indices][condition_cols].values
-    conditions = torch.tensor(conditions, dtype=torch.float32, device=device)
-
-    n_done = 0
-    num_batches = (num_samples + batch_size - 1) // batch_size
+    sample_idx = 0
 
     with torch.no_grad():
-        for i in tqdm(range(num_batches), desc="Sampling"):
-            start_idx = n_done
-            end_idx = min(start_idx + batch_size, num_samples)
-            batch_cond = conditions[start_idx:end_idx]
+        for batch_idx, batch_data in enumerate(tqdm(test_loader, desc="Conditional sampling")):
+            x, cond = batch_data
+            if cond is not None:
+                cond = cond.to(device)
 
-            samples = model.sample(batch_cond.size(0), device, cond=batch_cond)
+            B = x.size(0)
 
-            # Save samples
-            prefix = f"img{n_done:04d}"
-            save_component_images(samples, out_root, prefix, component_names)
+            # Sample from prior with test set conditions
+            samples = model.sample(B, device, cond=cond)
 
-            n_done += batch_cond.size(0)
+            # Save samples with unique indices
+            for n in range(B):
+                prefix = f"img{sample_idx + n:04d}"
+                save_component_images(samples[n:n+1], out_root, prefix, component_names)
 
-    print(f"\nDone – conditional samples saved under {out_root}")
+            sample_idx += B
+
+    print(f"\nDone – {sample_idx} conditional samples saved under {out_root}")
 
 
 def sample_inpainting(
@@ -276,6 +293,9 @@ def sample_inpainting(
         print(f"Preserving components: {components_to_preserve}")
         print(f"Processing {len(test_loader)} batches")
 
+    # Track global sample index across all batches
+    sample_idx = 0
+
     with torch.no_grad():
         for batch_idx, batch_data in enumerate(tqdm(test_loader, desc="Inpainting")):
             x, cond = batch_data
@@ -300,9 +320,13 @@ def sample_inpainting(
                 # Save results in preserve_comp subfolder
                 preserve_dir = os.path.join(out_root, preserve_comp)
                 for n in range(B):
-                    prefix = f"img{batch_idx:04d}"
+                    # Use global sample index to ensure unique filenames
+                    prefix = f"img{sample_idx + n:04d}"
                     sample = recon[n:n+1]  # [1, C, H, W]
                     save_component_images(sample, preserve_dir, prefix, component_names)
+
+            # Increment global index after processing all samples in batch
+            sample_idx += B
 
     if verbose:
         print(f"\nDone – inpainting samples saved under {out_root}")
@@ -419,16 +443,20 @@ def main():
     if args.mode == 'unconditional':
         sample_unconditional(
             model, args.num_samples, save_root, date_str,
-            component_names, device, args.batch_sz
+            component_names, device, config, args.batch_sz
         )
 
     elif args.mode == 'conditional':
         if not config['data'].get('normalized', False):
             print("ERROR: Conditional sampling requires normalized conditions in config")
             return
+
+        # Create test loader to get exact test set size and conditions
+        test_loader = create_test_loader(config, args.batch_sz)
+
         sample_conditional(
-            model, config, args.num_samples, save_root, date_str,
-            component_names, device, args.batch_sz
+            model, test_loader, save_root, date_str,
+            component_names, device
         )
 
     elif args.mode == 'inpainting':

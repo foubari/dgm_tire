@@ -35,8 +35,8 @@ training:
   batch_size: 64
   num_workers: 4
   lr: 0.00008
-  eval_every: 10
-  check_every: 25
+  eval_every: 100
+  check_every: 100
   seed: 0
 paths:
   output_dir: outputs/mdm/
