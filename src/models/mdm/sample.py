@@ -33,6 +33,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 from datasets.categorical import SegmentationDataset
 from models.mdm import MultinomialDiffusion, SegmentationUnet
 from utils.config import load_config, auto_complete_config, validate_config, resolve_path
+from utils.io import save_component_images
 import imageio
 
 
@@ -247,28 +248,69 @@ def sample_conditional(model, test_loader, save_root, date_str, guidance_scale=2
     print(f"\nDone – conditional samples saved under {out_root}")
 
 
+def segmap_to_multichannel(segmap, num_classes=5):
+    """
+    Convert segmentation map to multi-channel one-hot format.
+
+    Args:
+        segmap: (B, H, W) tensor with class indices in [0, num_classes-1]
+        num_classes: Number of classes/components
+
+    Returns:
+        multichannel: (B, C, H, W) tensor with one-hot encoding
+    """
+    B, H, W = segmap.shape
+    multichannel = torch.zeros(B, num_classes, H, W, device=segmap.device)
+    for c in range(num_classes):
+        multichannel[:, c] = (segmap == c).float()
+    return multichannel
+
+
 def sample_inpainting(model, test_loader, save_root, date_str, components_to_preserve, guidance_scale=2.0, batch_size=None, device='cuda'):
     """
     Inpainting: Generate missing components while preserving known ones.
+
+    Saves results in component-specific subdirectories like DDPM.
 
     Args:
         model: MultinomialDiffusion model with inpaint() method
         test_loader: Test data loader
         save_root: Root directory for saving samples
         date_str: Timestamp string for organizing outputs
-        components_to_preserve: List of component indices to preserve (e.g., [0, 2, 4])
+        components_to_preserve: List of component NAMES to preserve (e.g., ['group_nc', 'bt'])
         guidance_scale: Guidance scale for classifier-free guidance
-        batch_size: Max number of samples to generate
+        batch_size: Max number of samples to generate (None = all test set)
         device: Device to run on
     """
     out_root = os.path.join(save_root, date_str)
-    os.makedirs(out_root, exist_ok=True)
+
+    # Component names and their MDM class indices
+    # For epure: 0=background, 1=group_nc, 2=group_km, 3=bt, 4=fpu, 5=tpc
+    component_names = ['group_nc', 'group_km', 'bt', 'fpu', 'tpc']
+    component_to_idx = {
+        'group_nc': 1,
+        'group_km': 2,
+        'bt': 3,
+        'fpu': 4,
+        'tpc': 5
+    }
+
+    # Create component-specific subdirectories (like DDPM)
+    for comp_name in components_to_preserve:
+        comp_dir = os.path.join(out_root, comp_name)
+        os.makedirs(os.path.join(comp_dir, "full"), exist_ok=True)
+        for cname in component_names:
+            os.makedirs(os.path.join(comp_dir, cname), exist_ok=True)
+
+    # Track saved samples per component
+    n_saved = {comp_name: 0 for comp_name in components_to_preserve}
 
     model.to(device).eval()
     n_done = 0
 
     print(f"\nInpainting (guidance={guidance_scale}) for model dated {date_str}")
     print(f"Preserving components: {components_to_preserve}")
+    print(f"Processing {len(test_loader)} batches")
 
     with torch.no_grad():
         for batch_idx, (segmaps, cond) in enumerate(test_loader):
@@ -289,11 +331,13 @@ def sample_inpainting(model, test_loader, save_root, date_str, components_to_pre
                     cond = cond[:B]
 
             # Iterate through each component to preserve
-            for component_idx in components_to_preserve:
+            for comp_name in components_to_preserve:
+                comp_idx = component_to_idx[comp_name]
+
                 # Call inpainting method
                 inpainted = model.inpaint(
                     segmaps,
-                    component_idx=component_idx,
+                    component_idx=comp_idx,
                     cond=cond,
                     guidance_scale=guidance_scale
                 )
@@ -302,25 +346,32 @@ def sample_inpainting(model, test_loader, save_root, date_str, components_to_pre
                 if len(inpainted.shape) == 4:
                     inpainted = inpainted.squeeze(1)
 
-                # Save original and inpainted side by side
+                # Convert to multi-channel format for save_component_images
+                # MDM has 6 classes (0=bg, 1-5=components), extract only components 1-5
+                inpainted_multi_all = segmap_to_multichannel(inpainted, num_classes=6)
+                inpainted_multi = inpainted_multi_all[:, 1:, :, :]  # Skip background (channel 0)
+
+                # Save using utility (creates proper subdirectories)
                 for i in range(B):
-                    sample_idx = n_done + i
+                    save_component_images(
+                        inpainted_multi[i:i+1],  # [1, 5, H, W]
+                        os.path.join(out_root, comp_name),
+                        f"img{n_saved[comp_name]:04d}",
+                        component_names
+                    )
+                    n_saved[comp_name] += 1
 
-                    # Save original
-                    original_path = os.path.join(out_root, f"original_{sample_idx:04d}_comp{component_idx}.png")
-                    save_mask(segmaps[i], original_path)
+                print(f"\r[{date_str}] Component {comp_name}: Saved {n_saved[comp_name]} samples", end="", flush=True)
 
-                    # Save inpainted
-                    inpainted_path = os.path.join(out_root, f"inpainted_{sample_idx:04d}_comp{component_idx}.png")
-                    save_mask(inpainted[i], inpainted_path)
-
-                    print(f"\r[{date_str}] Component {component_idx}: Saved {sample_idx+1} samples", end="", flush=True)
+            print()  # New line after each batch
 
             n_done += B
             if n_done >= (batch_size or float('inf')):
                 break
 
     print(f"\nDone – inpainting samples saved under {out_root}")
+    for comp_name in components_to_preserve:
+        print(f"  {comp_name}: {n_saved[comp_name]} samples in {out_root}/{comp_name}/")
 
 
 def create_test_loader(config, args):
@@ -377,8 +428,8 @@ def main():
     parser.add_argument('--guidance_scale', type=float, default=2.0,
                        help='Guidance scale for conditional/inpainting sampling')
 
-    parser.add_argument('--components', type=str, default=None,
-                       help='Comma-separated component indices to preserve for inpainting (e.g., "0,2,4")')
+    parser.add_argument('--components', type=str, nargs='+',
+                       help='Component names to preserve for inpainting (e.g., group_nc bt)')
 
     parser.add_argument('--output_dir', type=str, default=None,
                        help='Base directory to save samples (overrides config)')
@@ -424,12 +475,12 @@ def main():
         elif args.mode == 'inpainting':
             test_loader = create_test_loader(config, args)
 
-            # Parse components to preserve
+            # Parse components to preserve (now expects component names, not indices)
             if args.components:
-                components_to_preserve = [int(c.strip()) for c in args.components.split(',')]
+                components_to_preserve = args.components  # Already a list from nargs='+'
             else:
-                # Default: preserve all components from config
-                components_to_preserve = list(range(model.num_classes))
+                # Default: preserve all components
+                components_to_preserve = ['group_nc', 'group_km', 'bt', 'fpu', 'tpc']
 
             sample_inpainting(
                 model, test_loader, save_root, date_str,

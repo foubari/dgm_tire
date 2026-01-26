@@ -37,13 +37,32 @@ ALL_MODELS = [
 ]
 
 # Models that don't support inpainting
-NO_INPAINTING_MODELS = ['mdm', 'wgan_gp']
+NO_INPAINTING_MODELS = ['wgan_gp']
 
 # Dataset components for CONDITIONAL and INPAINTING sampling
 # Only group_nc, group_km, fpu (NOT bt, tpc)
 DATASET_COMPONENTS = {
     'epure': ['group_nc', 'group_km', 'fpu'],
     'toy': ['group_nc', 'group_km', 'fpu']
+}
+
+# Component name to class index mapping for MDM (categorical model)
+# MDM uses class indices, not component names
+# epure: 6 classes (0=background, 1=group_nc, 2=group_km, 3=bt, 4=fpu, 5=tpc)
+# toy: 4 classes (0=group_nc, 1=group_km, 2=fpu, 3=background)
+MDM_COMPONENT_MAPPING = {
+    'epure': {
+        'group_nc': 1,
+        'group_km': 2,
+        'bt': 3,
+        'fpu': 4,
+        'tpc': 5
+    },
+    'toy': {
+        'group_nc': 0,
+        'group_km': 1,
+        'fpu': 2
+    }
 }
 
 
@@ -252,36 +271,42 @@ class Pipeline:
         """Get checkpoint path from a run directory.
 
         Looks for checkpoints in priority order:
-        1. checkpoint_100.pt (final epoch)
-        2. checkpoint_best.pt (if exists - GMRF-MVAE, VAE)
-        3. Latest checkpoint_{N}.pt
+        1. checkpoint_{epoch}.pt if --checkpoint-epoch is specified
+        2. Latest checkpoint_{N}.pt (highest epoch number)
+        3. checkpoint_best.pt (if exists - GMRF-MVAE, VAE)
         """
         check_dir = run_dir / "check"
 
         if not check_dir.exists():
             raise FileNotFoundError(f"Checkpoint directory not found: {check_dir}")
 
-        # Priority 1: checkpoint_100.pt (final epoch)
-        checkpoint_100 = check_dir / "checkpoint_100.pt"
-        if checkpoint_100.exists():
-            return checkpoint_100
+        # Priority 1: Specific epoch if requested
+        if hasattr(self.args, 'checkpoint_epoch') and self.args.checkpoint_epoch is not None:
+            checkpoint_epoch = check_dir / f"checkpoint_{self.args.checkpoint_epoch}.pt"
+            if checkpoint_epoch.exists():
+                return checkpoint_epoch
+            else:
+                raise FileNotFoundError(f"Checkpoint not found: {checkpoint_epoch}")
 
-        # Priority 2: checkpoint_best.pt (GMRF-MVAE, VAE)
-        checkpoint_best = check_dir / "checkpoint_best.pt"
-        if checkpoint_best.exists():
-            return checkpoint_best
-
-        # Priority 3: Find latest checkpoint_{N}.pt
+        # Priority 2: Find latest checkpoint_{N}.pt (highest epoch)
         checkpoints = list(check_dir.glob("checkpoint_*.pt"))
-        if checkpoints:
+        # Filter out checkpoint_best.pt from the numbered checkpoints
+        numbered_checkpoints = [cp for cp in checkpoints if 'best' not in cp.stem]
+        
+        if numbered_checkpoints:
             # Extract epoch number and find max
             def extract_epoch(path):
                 try:
                     return int(path.stem.split('_')[1])
                 except:
                     return 0
-            latest = max(checkpoints, key=extract_epoch)
+            latest = max(numbered_checkpoints, key=extract_epoch)
             return latest
+
+        # Priority 3: checkpoint_best.pt (GMRF-MVAE, VAE)
+        checkpoint_best = check_dir / "checkpoint_best.pt"
+        if checkpoint_best.exists():
+            return checkpoint_best
 
         raise FileNotFoundError(f"No checkpoint found in {check_dir}")
 
@@ -289,9 +314,9 @@ class Pipeline:
         """Get checkpoint path for model and seed (Windows-compatible).
 
         Looks for checkpoints in priority order:
-        1. checkpoint_100.pt (final epoch)
-        2. checkpoint_best.pt (if exists - GMRF-MVAE, VAE)
-        3. Latest checkpoint_{N}.pt
+        1. checkpoint_{epoch}.pt if --checkpoint-epoch is specified
+        2. Latest checkpoint_{N}.pt (highest epoch number)
+        3. checkpoint_best.pt (if exists - GMRF-MVAE, VAE)
         """
         suffix = "_toy" if self.dataset == "toy" else ""
         output_base = Path("outputs") / f"{model}{suffix}"
@@ -544,6 +569,7 @@ class Pipeline:
         ]
 
         if mode == "inpainting" and component:
+            # All models now use component names directly
             cmd.extend(["--components", component])
 
         if self.args.dry_run:
@@ -835,6 +861,8 @@ def parse_args():
                        help='Skip evaluation stage')
     parser.add_argument('--skip-models', type=str,
                        help='Comma-separated list of models to skip')
+    parser.add_argument('--checkpoint-epoch', type=int,
+                       help='Specific checkpoint epoch to use (e.g., 100, 200). If not specified, uses the latest checkpoint.')
     parser.add_argument('--dry-run', action='store_true',
                        help='Print commands without executing')
 

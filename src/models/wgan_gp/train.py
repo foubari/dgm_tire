@@ -417,12 +417,15 @@ def main():
         # Update EMA
         ema_generator.update()
         
-        # Log
+        # Log (with try/except to avoid crash if tensorboard file is deleted)
         if writer:
-            writer.add_scalar('Loss/Generator', loss_dict['generator_loss'], epoch)
-            writer.add_scalar('Loss/Critic', loss_dict['critic_loss'], epoch)
-            writer.add_scalar('Wasserstein_Distance', loss_dict['wasserstein_distance'], epoch)
-            writer.add_scalar('Gradient_Penalty', loss_dict['gradient_penalty'], epoch)
+            try:
+                writer.add_scalar('Loss/Generator', loss_dict['generator_loss'], epoch)
+                writer.add_scalar('Loss/Critic', loss_dict['critic_loss'], epoch)
+                writer.add_scalar('Wasserstein_Distance', loss_dict['wasserstein_distance'], epoch)
+                writer.add_scalar('Gradient_Penalty', loss_dict['gradient_penalty'], epoch)
+            except Exception as e:
+                print(f"Warning: TensorBoard logging failed: {e}")
         
         print(f"Epoch {epoch}/{epochs} - G Loss: {loss_dict['generator_loss']:.4f}, "
               f"C Loss: {loss_dict['critic_loss']:.4f}, "
@@ -437,7 +440,10 @@ def main():
             model.generator = generator  # Restore original generator
             
             if writer:
-                writer.add_scalar('Val_Wasserstein_Distance', val_wd, epoch)
+                try:
+                    writer.add_scalar('Val_Wasserstein_Distance', val_wd, epoch)
+                except Exception:
+                    pass  # Ignore tensorboard errors
             print(f"  Val WD: {val_wd:.4f}")
             
             if val_wd < best_val_wd:

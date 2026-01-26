@@ -30,7 +30,7 @@ data:
   normalized: true
 training:
   batch_size: 128
-  epochs: 200
+  epochs: 500
   lr: 0.001
   optimizer: adam
   amsgrad: true
@@ -38,16 +38,17 @@ training:
   K: 1
   objective: elbo
   llik_scaling: 0.0
-  eval_every: 10
+  eval_every: 100
   checkpoint_epochs:
-  - 50
   - 100
-  - 150
-  - 250
+  - 200
+  - 300
+  - 400
+  - 500
   num_workers: 0
   seed: 42
   device: cuda
-  check_every: 25
+  check_every: 100
 sampling:
   unconditional:
     n_samples: 1000
@@ -55,7 +56,8 @@ sampling:
   conditional:
     components:
     - group_nc
-    - bt
+    - fpu
+    - group_km
     batch_size: 32
   num_samples: 1000
 paths:

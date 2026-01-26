@@ -30,11 +30,11 @@ data:
   split_column: train
   normalized: true
 training:
-  epochs: 200
+  epochs: 500
   batch_size: 32               # ICTAI original: 32 (was 128!)
   num_workers: 4
   lr: 0.0005
-  check_every: 10
+  check_every: 100
   seed: 42
 
   # Loss configuration (ICTAI alignment)
@@ -44,7 +44,7 @@ training:
 
   # NOTE: Progressive masking NOT used for GMRF-MVAE (removed)
 
-  eval_every: 10
+  eval_every: 100
 paths:
   output_dir: outputs/gmrf_mvae/
   samples_dir: samples/gmrf_mvae/

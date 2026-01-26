@@ -43,7 +43,7 @@ data:
   split_column: train
   normalized: true
 training:
-  epochs: 200
+  epochs: 500
   batch_size: 64
   num_workers: 4
   lr_vqvae: 0.0002
@@ -51,8 +51,8 @@ training:
   train_prior_after_epoch: 500
   lr_prior: 0.0001
   optimizer_prior: adam
-  eval_every: 10
-  check_every: 25
+  eval_every: 100
+  check_every: 100
   seed: 0
 paths:
   output_dir: outputs/vqvae/

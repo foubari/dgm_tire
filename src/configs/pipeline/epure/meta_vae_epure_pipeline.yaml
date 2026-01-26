@@ -21,17 +21,17 @@ data:
   split_column: train
   normalized: true
 training:
-  marginal_epochs: 100
+  marginal_epochs: 500
   marginal_lr: 0.001
-  epochs: 100
+  epochs: 500
   batch_size: 128
   num_workers: 0
   lr: 0.0005
-  check_every: 25
+  check_every: 100
   seed: 42
   mask_warmup_epochs: 20
   max_mask_prob: 0.7
-  eval_every: 10
+  eval_every: 100
 paths:
   output_dir: outputs/meta_vae/
   samples_dir: samples/meta_vae/

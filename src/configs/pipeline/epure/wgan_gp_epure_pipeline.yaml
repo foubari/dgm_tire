@@ -31,7 +31,7 @@ data:
   split_column: train
   normalized: true
 training:
-  epochs: 200
+  epochs: 500
   batch_size: 64
   num_workers: 4
   lr_generator: 0.0001
@@ -41,8 +41,8 @@ training:
   optimizer: adam
   ema_decay: 0.9999
   ema_update_every: 10
-  eval_every: 10
-  check_every: 25
+  eval_every: 100
+  check_every: 100
   seed: 0
 paths:
   output_dir: outputs/wgan_gp/
