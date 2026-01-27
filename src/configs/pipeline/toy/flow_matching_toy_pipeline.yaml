@@ -14,7 +14,7 @@ model:
   sigma_min: 0.001
 data:
   root_dir: data/toy_epure
-  condition_csv: data/toy_epure/performances.csv
+  condition_csv: data/toy_epure/performances_1000.csv
   component_dirs:
   - group_nc
   - group_km

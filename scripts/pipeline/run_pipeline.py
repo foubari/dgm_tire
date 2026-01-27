@@ -271,24 +271,15 @@ class Pipeline:
         """Get checkpoint path from a run directory.
 
         Looks for checkpoints in priority order:
-        1. checkpoint_{epoch}.pt if --checkpoint-epoch is specified
-        2. Latest checkpoint_{N}.pt (highest epoch number)
-        3. checkpoint_best.pt (if exists - GMRF-MVAE, VAE)
+        1. Latest checkpoint_{N}.pt (highest epoch number)
+        2. checkpoint_best.pt (if exists - GMRF-MVAE, VAE)
         """
         check_dir = run_dir / "check"
 
         if not check_dir.exists():
             raise FileNotFoundError(f"Checkpoint directory not found: {check_dir}")
 
-        # Priority 1: Specific epoch if requested
-        if hasattr(self.args, 'checkpoint_epoch') and self.args.checkpoint_epoch is not None:
-            checkpoint_epoch = check_dir / f"checkpoint_{self.args.checkpoint_epoch}.pt"
-            if checkpoint_epoch.exists():
-                return checkpoint_epoch
-            else:
-                raise FileNotFoundError(f"Checkpoint not found: {checkpoint_epoch}")
-
-        # Priority 2: Find latest checkpoint_{N}.pt (highest epoch)
+        # Priority 1: Find latest checkpoint_{N}.pt (highest epoch)
         checkpoints = list(check_dir.glob("checkpoint_*.pt"))
         # Filter out checkpoint_best.pt from the numbered checkpoints
         numbered_checkpoints = [cp for cp in checkpoints if 'best' not in cp.stem]
@@ -303,7 +294,7 @@ class Pipeline:
             latest = max(numbered_checkpoints, key=extract_epoch)
             return latest
 
-        # Priority 3: checkpoint_best.pt (GMRF-MVAE, VAE)
+        # Priority 2: checkpoint_best.pt (GMRF-MVAE, VAE)
         checkpoint_best = check_dir / "checkpoint_best.pt"
         if checkpoint_best.exists():
             return checkpoint_best
@@ -314,9 +305,8 @@ class Pipeline:
         """Get checkpoint path for model and seed (Windows-compatible).
 
         Looks for checkpoints in priority order:
-        1. checkpoint_{epoch}.pt if --checkpoint-epoch is specified
-        2. Latest checkpoint_{N}.pt (highest epoch number)
-        3. checkpoint_best.pt (if exists - GMRF-MVAE, VAE)
+        1. Latest checkpoint_{N}.pt (highest epoch number)
+        2. checkpoint_best.pt (if exists - GMRF-MVAE, VAE)
         """
         suffix = "_toy" if self.dataset == "toy" else ""
         output_base = Path("outputs") / f"{model}{suffix}"
@@ -861,8 +851,6 @@ def parse_args():
                        help='Skip evaluation stage')
     parser.add_argument('--skip-models', type=str,
                        help='Comma-separated list of models to skip')
-    parser.add_argument('--checkpoint-epoch', type=int,
-                       help='Specific checkpoint epoch to use (e.g., 100, 200). If not specified, uses the latest checkpoint.')
     parser.add_argument('--dry-run', action='store_true',
                        help='Print commands without executing')
 

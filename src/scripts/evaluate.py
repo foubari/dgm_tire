@@ -21,6 +21,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from typing import Optional
 import numpy as np
 
 # Add src_new to path

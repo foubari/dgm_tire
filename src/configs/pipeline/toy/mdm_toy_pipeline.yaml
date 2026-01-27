@@ -16,7 +16,7 @@ model:
   beta_schedule: sigmoid
 data:
   root_dir: data/toy_epure/
-  condition_csv: data/toy_epure/performances.csv
+  condition_csv: data/toy_epure/performances_1000.csv
   condition_columns:
   - d_cons
   - d_rigid

@@ -33,7 +33,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 from datasets.categorical import SegmentationDataset
 from models.mdm import MultinomialDiffusion, SegmentationUnet
 from utils.config import load_config, auto_complete_config, validate_config, resolve_path
-from utils.io import save_component_images
+# save_component_images not used - MDM uses save_mdm_sample instead
 import imageio
 
 
@@ -177,39 +177,105 @@ def save_mask(mask, path, scale_for_visualization=True, background_class=5):
     imageio.imwrite(path, mask_np)
 
 
+def save_mdm_sample(segmap, out_root, prefix, component_names, component_to_idx):
+    """
+    Save MDM segmentation map with proper folder structure.
+
+    Creates:
+    - full/: segmentation map (class indices visualized)
+    - {component}/: binary mask for each component
+
+    Args:
+        segmap: (H, W) tensor with class indices
+        out_root: output directory (should have full/, group_nc/, etc. subfolders)
+        prefix: filename prefix (e.g., "img0000")
+        component_names: list of component names ['group_nc', 'group_km', 'bt', 'fpu', 'tpc']
+        component_to_idx: dict mapping component name to class index
+    """
+    # Ensure segmap is on CPU and numpy
+    if torch.is_tensor(segmap):
+        segmap_np = segmap.cpu().numpy()
+    else:
+        segmap_np = segmap
+
+    # Save full image (segmentation map with all classes)
+    # Use save_mask with scale_for_visualization=True to show non-background as white
+    full_path = os.path.join(out_root, "full", f"{prefix}_full.png")
+    save_mask(segmap_np, full_path, scale_for_visualization=True, background_class=0)
+
+    # Save individual component masks (binary: 0 or 255)
+    for comp_name in component_names:
+        comp_idx = component_to_idx[comp_name]
+        # Create binary mask: 255 where this component exists, 0 elsewhere
+        binary_mask = np.where(segmap_np == comp_idx, 255, 0).astype(np.uint8)
+        comp_path = os.path.join(out_root, comp_name, f"{prefix}_{comp_name}.png")
+        imageio.imwrite(comp_path, binary_mask)
+
+
 def sample_unconditional(model, save_root, date_str, n_samples=1000, batch_sz=64, device='cuda'):
-    """Unconditional sampling."""
+    """Unconditional sampling with proper folder structure."""
     out_root = os.path.join(save_root, date_str)
-    os.makedirs(out_root, exist_ok=True)
-    
+
+    # Component names and their MDM class indices
+    # For epure: 0=background, 1=group_nc, 2=group_km, 3=bt, 4=fpu, 5=tpc
+    component_names = ['group_nc', 'group_km', 'bt', 'fpu', 'tpc']
+    component_to_idx = {
+        'group_nc': 1,
+        'group_km': 2,
+        'bt': 3,
+        'fpu': 4,
+        'tpc': 5
+    }
+
+    # Create folder structure like other models
+    os.makedirs(os.path.join(out_root, "full"), exist_ok=True)
+    for comp_name in component_names:
+        os.makedirs(os.path.join(out_root, comp_name), exist_ok=True)
+
     model.to(device).eval()
     n_done = 0
-    
+
     print(f"\nUnconditional sampling for model dated {date_str}")
-    
+
     with torch.no_grad():
         while n_done < n_samples:
             b = min(batch_sz, n_samples - n_done)
             samples = model.sample(num_samples=b, cond=None, guidance_scale=0.0)  # (B, H, W) or (B, 1, H, W)
-            
+
             # Ensure samples is 3D (B, H, W)
             if len(samples.shape) == 4:
                 # (B, 1, H, W) -> (B, H, W)
                 samples = samples.squeeze(1)
-            
+
             for i in range(b):
-                save_mask(samples[i], os.path.join(out_root, f"sample_{n_done+i:04d}.png"))
-            
+                prefix = f"img{n_done+i:04d}"
+                save_mdm_sample(samples[i], out_root, prefix, component_names, component_to_idx)
+
             n_done += b
             print(f"\r[{date_str}] Saved {n_done}/{n_samples}", end="", flush=True)
-    
+
     print(f"\nDone – unconditional samples saved under {out_root}")
 
 
 def sample_conditional(model, test_loader, save_root, date_str, guidance_scale=2.0, batch_size=None, device='cuda'):
-    """Conditional sampling."""
+    """Conditional sampling with proper folder structure."""
     out_root = os.path.join(save_root, date_str)
-    os.makedirs(out_root, exist_ok=True)
+
+    # Component names and their MDM class indices
+    # For epure: 0=background, 1=group_nc, 2=group_km, 3=bt, 4=fpu, 5=tpc
+    component_names = ['group_nc', 'group_km', 'bt', 'fpu', 'tpc']
+    component_to_idx = {
+        'group_nc': 1,
+        'group_km': 2,
+        'bt': 3,
+        'fpu': 4,
+        'tpc': 5
+    }
+
+    # Create folder structure like other models
+    os.makedirs(os.path.join(out_root, "full"), exist_ok=True)
+    for comp_name in component_names:
+        os.makedirs(os.path.join(out_root, comp_name), exist_ok=True)
 
     model.to(device).eval()
     n_done = 0
@@ -240,7 +306,8 @@ def sample_conditional(model, test_loader, save_root, date_str, guidance_scale=2
                 samples = samples.squeeze(1)
 
             for i in range(B):
-                save_mask(samples[i], os.path.join(out_root, f"sample_{n_done+i:04d}.png"))
+                prefix = f"img{n_done+i:04d}"
+                save_mdm_sample(samples[i], out_root, prefix, component_names, component_to_idx)
 
             n_done += B
             print(f"\r[{date_str}] Saved {n_done} samples", end="", flush=True)
@@ -346,19 +413,11 @@ def sample_inpainting(model, test_loader, save_root, date_str, components_to_pre
                 if len(inpainted.shape) == 4:
                     inpainted = inpainted.squeeze(1)
 
-                # Convert to multi-channel format for save_component_images
-                # MDM has 6 classes (0=bg, 1-5=components), extract only components 1-5
-                inpainted_multi_all = segmap_to_multichannel(inpainted, num_classes=6)
-                inpainted_multi = inpainted_multi_all[:, 1:, :, :]  # Skip background (channel 0)
-
-                # Save using utility (creates proper subdirectories)
+                # Save using save_mdm_sample (preserves class information properly)
+                comp_out_dir = os.path.join(out_root, comp_name)
                 for i in range(B):
-                    save_component_images(
-                        inpainted_multi[i:i+1],  # [1, 5, H, W]
-                        os.path.join(out_root, comp_name),
-                        f"img{n_saved[comp_name]:04d}",
-                        component_names
-                    )
+                    prefix = f"img{n_saved[comp_name]:04d}"
+                    save_mdm_sample(inpainted[i], comp_out_dir, prefix, component_names, component_to_idx)
                     n_saved[comp_name] += 1
 
                 print(f"\r[{date_str}] Component {comp_name}: Saved {n_saved[comp_name]} samples", end="", flush=True)

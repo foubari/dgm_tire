@@ -127,7 +127,8 @@ class SegmentationDataset(Dataset):
             else:
                 npy_path = Path(self.mask_path)
                 if not npy_path.is_absolute():
-                    npy_path = self.root_dir / "preprocessed" / npy_path
+                    # mask_path is relative to root_dir (not preprocessed/)
+                    npy_path = self.root_dir / npy_path
             
             if not npy_path.exists():
                 raise FileNotFoundError(f"Mask numpy file not found: {npy_path}")
