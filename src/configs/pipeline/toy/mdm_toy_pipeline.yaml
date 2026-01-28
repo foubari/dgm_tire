@@ -37,7 +37,7 @@ training:
   num_workers: 4
   lr: 0.00008
   eval_every: 10
-  check_every: 25
+  check_every: 100
   seed: 0
 paths:
   output_dir: outputs/mdm_toy/

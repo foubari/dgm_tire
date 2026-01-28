@@ -37,6 +37,48 @@ from utils.config import load_config, auto_complete_config, validate_config, res
 import imageio
 
 
+# Dataset-specific component mappings
+# Note: class indices depend on how masks were created
+DATASET_COMPONENTS = {
+    # epure: 6 classes (0=background, 1-5=components)
+    'epure': {
+        'names': ['group_nc', 'group_km', 'bt', 'fpu', 'tpc'],
+        'to_idx': {'group_nc': 1, 'group_km': 2, 'bt': 3, 'fpu': 4, 'tpc': 5},
+        'background': 0
+    },
+    # toy: 4 classes (0-2=components, 3=background)
+    'toy': {
+        'names': ['group_nc', 'group_km', 'fpu'],
+        'to_idx': {'group_nc': 0, 'group_km': 1, 'fpu': 2},
+        'background': 3
+    }
+}
+
+
+def get_component_info(num_classes):
+    """
+    Get component names and mapping based on number of classes.
+
+    Args:
+        num_classes: Number of classes in the model (includes background)
+
+    Returns:
+        component_names: list of component names
+        component_to_idx: dict mapping component name to class index
+        background_class: class index for background
+    """
+    if num_classes == 6:
+        # epure dataset
+        info = DATASET_COMPONENTS['epure']
+    elif num_classes == 4:
+        # toy dataset
+        info = DATASET_COMPONENTS['toy']
+    else:
+        raise ValueError(f"Unknown dataset with {num_classes} classes. Expected 4 (toy) or 6 (epure).")
+
+    return info['names'], info['to_idx'], info['background']
+
+
 def load_model_from_checkpoint(checkpoint_path, config_path=None, device='cuda'):
     """Load model from checkpoint."""
     checkpoint_path = Path(checkpoint_path)
@@ -177,7 +219,7 @@ def save_mask(mask, path, scale_for_visualization=True, background_class=5):
     imageio.imwrite(path, mask_np)
 
 
-def save_mdm_sample(segmap, out_root, prefix, component_names, component_to_idx):
+def save_mdm_sample(segmap, out_root, prefix, component_names, component_to_idx, background_class=0):
     """
     Save MDM segmentation map with proper folder structure.
 
@@ -191,6 +233,7 @@ def save_mdm_sample(segmap, out_root, prefix, component_names, component_to_idx)
         prefix: filename prefix (e.g., "img0000")
         component_names: list of component names ['group_nc', 'group_km', 'bt', 'fpu', 'tpc']
         component_to_idx: dict mapping component name to class index
+        background_class: class index for background (0 for epure, 3 for toy)
     """
     # Ensure segmap is on CPU and numpy
     if torch.is_tensor(segmap):
@@ -201,7 +244,7 @@ def save_mdm_sample(segmap, out_root, prefix, component_names, component_to_idx)
     # Save full image (segmentation map with all classes)
     # Use save_mask with scale_for_visualization=True to show non-background as white
     full_path = os.path.join(out_root, "full", f"{prefix}_full.png")
-    save_mask(segmap_np, full_path, scale_for_visualization=True, background_class=0)
+    save_mask(segmap_np, full_path, scale_for_visualization=True, background_class=background_class)
 
     # Save individual component masks (binary: 0 or 255)
     for comp_name in component_names:
@@ -212,20 +255,12 @@ def save_mdm_sample(segmap, out_root, prefix, component_names, component_to_idx)
         imageio.imwrite(comp_path, binary_mask)
 
 
-def sample_unconditional(model, save_root, date_str, n_samples=1000, batch_sz=64, device='cuda'):
+def sample_unconditional(model, save_root, date_str, num_classes, n_samples=1000, batch_sz=64, device='cuda'):
     """Unconditional sampling with proper folder structure."""
     out_root = os.path.join(save_root, date_str)
 
-    # Component names and their MDM class indices
-    # For epure: 0=background, 1=group_nc, 2=group_km, 3=bt, 4=fpu, 5=tpc
-    component_names = ['group_nc', 'group_km', 'bt', 'fpu', 'tpc']
-    component_to_idx = {
-        'group_nc': 1,
-        'group_km': 2,
-        'bt': 3,
-        'fpu': 4,
-        'tpc': 5
-    }
+    # Get component info based on dataset (detected from num_classes)
+    component_names, component_to_idx, background_class = get_component_info(num_classes)
 
     # Create folder structure like other models
     os.makedirs(os.path.join(out_root, "full"), exist_ok=True)
@@ -249,7 +284,7 @@ def sample_unconditional(model, save_root, date_str, n_samples=1000, batch_sz=64
 
             for i in range(b):
                 prefix = f"img{n_done+i:04d}"
-                save_mdm_sample(samples[i], out_root, prefix, component_names, component_to_idx)
+                save_mdm_sample(samples[i], out_root, prefix, component_names, component_to_idx, background_class)
 
             n_done += b
             print(f"\r[{date_str}] Saved {n_done}/{n_samples}", end="", flush=True)
@@ -257,20 +292,12 @@ def sample_unconditional(model, save_root, date_str, n_samples=1000, batch_sz=64
     print(f"\nDone – unconditional samples saved under {out_root}")
 
 
-def sample_conditional(model, test_loader, save_root, date_str, guidance_scale=2.0, batch_size=None, device='cuda'):
+def sample_conditional(model, test_loader, save_root, date_str, num_classes, guidance_scale=2.0, batch_size=None, device='cuda'):
     """Conditional sampling with proper folder structure."""
     out_root = os.path.join(save_root, date_str)
 
-    # Component names and their MDM class indices
-    # For epure: 0=background, 1=group_nc, 2=group_km, 3=bt, 4=fpu, 5=tpc
-    component_names = ['group_nc', 'group_km', 'bt', 'fpu', 'tpc']
-    component_to_idx = {
-        'group_nc': 1,
-        'group_km': 2,
-        'bt': 3,
-        'fpu': 4,
-        'tpc': 5
-    }
+    # Get component info based on dataset (detected from num_classes)
+    component_names, component_to_idx, background_class = get_component_info(num_classes)
 
     # Create folder structure like other models
     os.makedirs(os.path.join(out_root, "full"), exist_ok=True)
@@ -307,7 +334,7 @@ def sample_conditional(model, test_loader, save_root, date_str, guidance_scale=2
 
             for i in range(B):
                 prefix = f"img{n_done+i:04d}"
-                save_mdm_sample(samples[i], out_root, prefix, component_names, component_to_idx)
+                save_mdm_sample(samples[i], out_root, prefix, component_names, component_to_idx, background_class)
 
             n_done += B
             print(f"\r[{date_str}] Saved {n_done} samples", end="", flush=True)
@@ -333,7 +360,7 @@ def segmap_to_multichannel(segmap, num_classes=5):
     return multichannel
 
 
-def sample_inpainting(model, test_loader, save_root, date_str, components_to_preserve, guidance_scale=2.0, batch_size=None, device='cuda'):
+def sample_inpainting(model, test_loader, save_root, date_str, num_classes, components_to_preserve, guidance_scale=2.0, batch_size=None, device='cuda'):
     """
     Inpainting: Generate missing components while preserving known ones.
 
@@ -344,6 +371,7 @@ def sample_inpainting(model, test_loader, save_root, date_str, components_to_pre
         test_loader: Test data loader
         save_root: Root directory for saving samples
         date_str: Timestamp string for organizing outputs
+        num_classes: Number of classes (for detecting dataset type)
         components_to_preserve: List of component NAMES to preserve (e.g., ['group_nc', 'bt'])
         guidance_scale: Guidance scale for classifier-free guidance
         batch_size: Max number of samples to generate (None = all test set)
@@ -351,16 +379,8 @@ def sample_inpainting(model, test_loader, save_root, date_str, components_to_pre
     """
     out_root = os.path.join(save_root, date_str)
 
-    # Component names and their MDM class indices
-    # For epure: 0=background, 1=group_nc, 2=group_km, 3=bt, 4=fpu, 5=tpc
-    component_names = ['group_nc', 'group_km', 'bt', 'fpu', 'tpc']
-    component_to_idx = {
-        'group_nc': 1,
-        'group_km': 2,
-        'bt': 3,
-        'fpu': 4,
-        'tpc': 5
-    }
+    # Get component info based on dataset (detected from num_classes)
+    component_names, component_to_idx, background_class = get_component_info(num_classes)
 
     # Create component-specific subdirectories (like DDPM)
     for comp_name in components_to_preserve:
@@ -417,7 +437,7 @@ def sample_inpainting(model, test_loader, save_root, date_str, components_to_pre
                 comp_out_dir = os.path.join(out_root, comp_name)
                 for i in range(B):
                     prefix = f"img{n_saved[comp_name]:04d}"
-                    save_mdm_sample(inpainted[i], comp_out_dir, prefix, component_names, component_to_idx)
+                    save_mdm_sample(inpainted[i], comp_out_dir, prefix, component_names, component_to_idx, background_class)
                     n_saved[comp_name] += 1
 
                 print(f"\r[{date_str}] Component {comp_name}: Saved {n_saved[comp_name]} samples", end="", flush=True)
@@ -515,10 +535,13 @@ def main():
 
     os.makedirs(save_root, exist_ok=True)
 
+    # Get num_classes from model for dataset detection
+    num_classes = model.num_classes
+
     with torch.no_grad():
         if args.mode == 'unconditional':
             sample_unconditional(
-                model, save_root, date_str,
+                model, save_root, date_str, num_classes,
                 n_samples=args.num_samples,
                 batch_sz=args.batch_sz,
                 device=device
@@ -526,7 +549,7 @@ def main():
         elif args.mode == 'conditional':
             test_loader = create_test_loader(config, args)
             sample_conditional(
-                model, test_loader, save_root, date_str,
+                model, test_loader, save_root, date_str, num_classes,
                 guidance_scale=args.guidance_scale,
                 batch_size=args.num_samples,
                 device=device
@@ -534,15 +557,18 @@ def main():
         elif args.mode == 'inpainting':
             test_loader = create_test_loader(config, args)
 
+            # Get component names for this dataset
+            component_names, _, _ = get_component_info(num_classes)
+
             # Parse components to preserve (now expects component names, not indices)
             if args.components:
                 components_to_preserve = args.components  # Already a list from nargs='+'
             else:
-                # Default: preserve all components
-                components_to_preserve = ['group_nc', 'group_km', 'bt', 'fpu', 'tpc']
+                # Default: preserve all components for this dataset
+                components_to_preserve = component_names
 
             sample_inpainting(
-                model, test_loader, save_root, date_str,
+                model, test_loader, save_root, date_str, num_classes,
                 components_to_preserve=components_to_preserve,
                 guidance_scale=args.guidance_scale,
                 batch_size=args.num_samples,
