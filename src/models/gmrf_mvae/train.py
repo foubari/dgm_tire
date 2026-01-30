@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Training script for GMRF MVAE.
+Training script for GMRF MVAE - ICTAI implementation.
 
 Usage:
-    python src_new/models/gmrf_mvae/train.py --config configs/gmrf_mvae_epure_full.yaml
+    python src/models/gmrf_mvae/train.py --config configs/gmrf_mvae_epure_full.yaml
 """
 
 import argparse
@@ -15,50 +15,47 @@ import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-# Add src_new to path
+# Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from datasets.continuous import MultiComponentDataset
-from models.gmrf_mvae.model import GMRF_MVAE
+from models.gmrf_mvae.model import Epure_GMMVAE
+from models.gmrf_mvae.objectives import compute_elbo_dist
+
+
+class Params:
+    """Parameter container matching ICTAI implementation."""
+
+    def __init__(self, params_dict):
+        self.latent_dim = params_dict.get('latent_dim', 4)
+        self.diagonal_transf = params_dict.get('diagonal_transf', 'softplus')
+        self.hidden_dim = params_dict.get('hidden_dim', 128)
+        self.n_layers = params_dict.get('n_layers', 2)
+        self.device = params_dict.get('device', 'cuda')
+        self.reduced_diag = params_dict.get('reduced_diag', False)
+        self.nf = params_dict.get('nf', 32)
+        self.nf_max_e = params_dict.get('nf_max_e', 512)
+        self.nf_max_d = params_dict.get('nf_max_d', 256)
 
 
 def resolve_path(path_str: str, base_dir: Path = None) -> Path:
-    """
-    Resolve a path string to an absolute Path.
-    Handles relative paths and paths relative to project root.
-    """
+    """Resolve a path string to an absolute Path."""
     path = Path(path_str)
-    
-    # If already absolute and exists, return it
+
     if path.is_absolute() and path.exists():
         return path
-    
-    # If absolute but doesn't exist, try to resolve from project root
-    if path.is_absolute():
-        # Remove leading slash for Unix-style paths
-        path_str_clean = str(path).lstrip('/')
-        if base_dir is None:
-            _THIS_FILE = Path(__file__).resolve()
-            base_dir = _THIS_FILE.parent.parent.parent.parent  # Go to project root
-        potential_path = base_dir / path_str_clean
-        if potential_path.exists():
-            return potential_path.resolve()
-    
-    # Handle relative paths
+
     if base_dir is None:
         _THIS_FILE = Path(__file__).resolve()
-        base_dir = _THIS_FILE.parent.parent.parent.parent  # Go to project root
-    
-    # Try relative to current working directory first
+        base_dir = _THIS_FILE.parent.parent.parent.parent
+
     if path.exists():
         return path.resolve()
-    
-    # Try relative to project root
+
     potential_path = base_dir / path
     if potential_path.exists():
         return potential_path.resolve()
-    
-    # If still not found, return the resolved path anyway (will raise error later)
+
     return (base_dir / path).resolve()
 
 
@@ -85,143 +82,244 @@ def save_checkpoint(model, optimizer, epoch, loss, checkpoint_path):
 
 
 def train(
-    model: GMRF_MVAE,
+    model: Epure_GMMVAE,
     train_loader: DataLoader,
     config: dict,
     device: torch.device,
     output_dir: Path
 ):
-    """Train GMRF MVAE."""
+    """
+    Train GMRF MVAE - ICTAI style.
+
+    Uses compute_elbo_dist for loss computation with full covariance matrix.
+    """
     epochs = config['training']['epochs']
     lr = config['training']['lr']
+    beta = config['model'].get('beta', 1.0)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
     # Loss configuration (ICTAI alignment)
-    recon_loss_type = config['training'].get('recon_loss', 'mse')
+    recon_loss_type = config['training'].get('recon_loss', 'split_l1_mse')
     alpha_mse = config['training'].get('alpha_mse', 0.5)
     recon_weights = config['training'].get('recon_weights', None)
 
-    print(f"Loss configuration:")
+    print(f"\nTraining configuration:")
+    print(f"  - epochs: {epochs}")
+    print(f"  - lr: {lr}")
+    print(f"  - beta: {beta}")
     print(f"  - recon_loss: {recon_loss_type}")
     print(f"  - alpha_mse: {alpha_mse}")
     print(f"  - recon_weights: {recon_weights}")
 
     best_loss = float('inf')
+    mean_losses, mean_log_px_zs, mean_kls = [], [], []
 
     for epoch in range(epochs):
         model.train()
 
-        total_loss = 0
-        total_recon = 0
-        total_kl = 0
+        batch_losses, batch_log_px_zs, batch_kls = [], [], []
 
         pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{epochs}")
         for batch in pbar:
             x, cond = batch
             x = x.to(device)  # [B, C, 64, 32]
-            if cond is not None:
-                cond = cond.to(device)
 
             B, C = x.size(0), x.size(1)
 
-            # Forward pass (NO MASKING - ICTAI alignment)
-            recon, mu_list, logvar_list = model(x, cond)
+            # Convert stacked tensor to list of tensors (ICTAI format)
+            data = [x[:, i:i+1] for i in range(C)]
 
-            # Loss with ICTAI parameters
-            loss, recon_loss, kl_loss = model.loss_function(
-                recon, x, mu_list, logvar_list,
-                recon_weights=recon_weights,
+            # Forward pass (ICTAI style - stores results in model)
+            model(data)
+
+            # Compute ELBO (ICTAI style)
+            elbo, log_px_z, kl_div = compute_elbo_dist(
+                model, data, beta=beta,
                 loss_type=recon_loss_type,
-                alpha_mse=alpha_mse
+                alpha_mse=alpha_mse,
+                weights=recon_weights
             )
+
+            loss = -elbo
 
             # Backward
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
 
-            total_loss += loss.item()
-            total_recon += recon_loss.item()
-            total_kl += kl_loss.item()
+            batch_losses.append(loss.item())
+            batch_log_px_zs.append(log_px_z.item())
+            batch_kls.append(kl_div.item())
 
             pbar.set_postfix({
-                'loss': loss.item(),
-                'recon': recon_loss.item(),
-                'kl': kl_loss.item(),
+                'loss': f'{loss.item():.4f}',
+                'recon': f'{log_px_z.item():.4f}',
+                'kl': f'{kl_div.item():.4f}',
             })
 
-        avg_loss = total_loss / len(train_loader)
-        avg_recon = total_recon / len(train_loader)
-        avg_kl = total_kl / len(train_loader)
+        # Compute epoch averages
+        mean_loss = sum(batch_losses) / len(batch_losses)
+        mean_log_px_z = sum(batch_log_px_zs) / len(batch_log_px_zs)
+        mean_kl = sum(batch_kls) / len(batch_kls)
 
-        print(f"Epoch {epoch+1}/{epochs} - Loss: {avg_loss:.4f} (Recon: {avg_recon:.4f}, KL: {avg_kl:.4f})")
+        mean_losses.append(mean_loss)
+        mean_log_px_zs.append(mean_log_px_z)
+        mean_kls.append(mean_kl)
 
-        # Save checkpoint
-        if (epoch + 1) % config['training'].get('check_every', 10) == 0:
-            checkpoint_path = output_dir / 'check' / f'checkpoint_{epoch+1}.pt'
-            checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
-            save_checkpoint(model, optimizer, epoch, avg_loss, checkpoint_path)
-            print(f"  Saved checkpoint to {checkpoint_path}")
+        print(f"Epoch {epoch+1}/{epochs} - Loss: {mean_loss:.4f} (log p(x|z): {mean_log_px_z:.4f}, KL: {mean_kl:.4f})")
+
+        # Save generations at intervals (ICTAI style)
+        if epoch == 0 or (epoch + 1) % max(1, epochs // 10) == 0 or epoch == epochs - 1:
+            save_generations(model, data, epoch, output_dir, recon_loss_type)
+
+        # Save checkpoint at intervals
+        if epoch != 0 and ((epoch + 1) % max(1, epochs // 2) == 0 or epoch == epochs - 1):
+            checkpoint_path = output_dir / f'model_state_dict_{epoch}.pt'
+            torch.save(model.state_dict(), checkpoint_path)
+            print(f"  Saved model to {checkpoint_path}")
 
         # Save best model
-        if avg_loss < best_loss:
-            best_loss = avg_loss
-            best_path = output_dir / 'check' / 'checkpoint_best.pt'
-            best_path.parent.mkdir(parents=True, exist_ok=True)
-            save_checkpoint(model, optimizer, epoch, avg_loss, best_path)
-            print(f"  Saved best model to {best_path}")
+        if mean_loss < best_loss:
+            best_loss = mean_loss
+            best_path = output_dir / 'model_best.pt'
+            torch.save(model.state_dict(), best_path)
+
+    # Save training curves
+    save_training_curves(mean_losses, mean_log_px_zs, mean_kls, output_dir / 'losses.png')
 
     print(f"\n{'='*60}")
     print(f"Training complete! Best loss: {best_loss:.4f}")
     print(f"{'='*60}\n")
 
 
+def save_generations(model, data, epoch, output_dir, recon_loss_type):
+    """Save cross-modal and unconditional generations."""
+    import matplotlib.pyplot as plt
+    from torchvision.utils import make_grid, save_image
+
+    model.eval()
+    with torch.no_grad():
+        # Cross-modal generations
+        try:
+            recons_mat = model.self_and_cross_modal_generation([d[:1] for d in data])
+
+            # Apply sigmoid if using BCE
+            if recon_loss_type == 'bce':
+                recons_mat = [[torch.sigmoid(r) for r in row] for row in recons_mat]
+
+            # Save cross-modal grid
+            save_cross_generations(recons_mat, output_dir / f'cross_gen_epoch_{epoch}.png')
+        except Exception as e:
+            print(f"  Warning: Could not save cross-modal generations: {e}")
+
+        # Unconditional generations
+        try:
+            generation = model.generate_for_calculating_unconditional_coherence(20)
+            if recon_loss_type == 'bce':
+                generation = [torch.sigmoid(g) for g in generation]
+
+            save_unconditional_generations(generation, output_dir / f'uncond_gen_{epoch}.png')
+        except Exception as e:
+            print(f"  Warning: Could not save unconditional generations: {e}")
+
+    model.train()
+
+
+def save_cross_generations(cross_generations, save_path):
+    """Save cross-modal generation matrix."""
+    import matplotlib.pyplot as plt
+    from torchvision.utils import make_grid
+
+    num_modalities = len(cross_generations)
+
+    grid = []
+    for row in cross_generations:
+        row_images = torch.cat([img.squeeze(0).cpu() for img in row], dim=2)
+        grid.append(row_images)
+
+    full_grid = torch.cat(grid, dim=1)
+    grid_image = make_grid(full_grid.unsqueeze(0), nrow=1, padding=2, normalize=False).permute(1, 2, 0)
+
+    plt.figure(figsize=(10, 10))
+    plt.imshow(grid_image, cmap='gray')
+    plt.axis("off")
+    plt.title("Cross-Generation Results")
+    plt.savefig(save_path, bbox_inches="tight")
+    plt.close()
+
+
+def save_unconditional_generations(generations, save_path):
+    """Save unconditional generation grid."""
+    import matplotlib.pyplot as plt
+    from torchvision.utils import make_grid
+
+    generations = [gen.cpu() for gen in generations]
+
+    # Superposition
+    superposition = torch.stack(generations, dim=0).sum(dim=0)
+    all_generations = generations + [superposition]
+
+    grids = []
+    for tensor in all_generations:
+        tensor = tensor.view(-1, tensor.shape[1], tensor.shape[-2], tensor.shape[-1])
+        grid = make_grid(tensor, nrow=1, padding=2, normalize=False)
+        grids.append(grid)
+
+    full_grid = torch.cat(grids, dim=2)
+    full_grid_image = full_grid.permute(1, 2, 0).numpy()
+    full_grid_image = full_grid_image[::-1]  # Flip vertically
+
+    plt.figure(figsize=(8, len(generations[0]) * 2))
+    plt.imshow(full_grid_image, vmin=0, vmax=1)
+    plt.axis("off")
+    plt.title("Unconditional Generations")
+    plt.savefig(save_path, bbox_inches="tight")
+    plt.close()
+
+
+def save_training_curves(mean_losses, mean_log_px_zs, mean_kls, save_path):
+    """Save training loss curves."""
+    import matplotlib.pyplot as plt
+
+    epochs = len(mean_losses)
+    plt.figure(figsize=(12, 5))
+
+    plt.subplot(1, 3, 1)
+    plt.plot(range(epochs), mean_losses, label='Loss')
+    plt.xlabel('Epochs')
+    plt.ylabel('Loss')
+    plt.title('Training Loss')
+
+    plt.subplot(1, 3, 2)
+    plt.plot(range(epochs), mean_log_px_zs, label='log p(x|z)')
+    plt.xlabel('Epochs')
+    plt.ylabel('log p(x|z)')
+    plt.title('log p(x|z)')
+
+    plt.subplot(1, 3, 3)
+    plt.plot(range(epochs), mean_kls, label='KL Divergence')
+    plt.xlabel('Epochs')
+    plt.ylabel('KL Divergence')
+    plt.title('KL Divergence')
+
+    plt.tight_layout()
+    plt.savefig(save_path, bbox_inches="tight")
+    plt.close()
+
+
 def main():
-    parser = argparse.ArgumentParser(description="Train GMRF MVAE")
+    parser = argparse.ArgumentParser(description="Train GMRF MVAE (ICTAI implementation)")
     parser.add_argument('--config', type=str, required=True, help='Path to config file')
     parser.add_argument('--seed', type=int, default=None, help='Random seed')
     args = parser.parse_args()
 
     # Resolve config path
-    config_path = Path(args.config)
-    
-    # Handle Unix-style absolute paths (e.g., /src_new/configs/...)
-    if config_path.is_absolute() and not config_path.exists():
-        # Try to resolve relative to src_new directory
-        _THIS_FILE = Path(__file__).resolve()
-        _SRC_NEW_DIR = _THIS_FILE.parent.parent.parent
-        # Remove leading slash and try relative path
-        relative_path = str(config_path).lstrip('/')
-        potential_path = _SRC_NEW_DIR / relative_path
-        if potential_path.exists():
-            config_path = potential_path
-        else:
-            # Try just the filename in configs directory
-            potential_path = _SRC_NEW_DIR / "configs" / config_path.name
-            if potential_path.exists():
-                config_path = potential_path
-    
-    # If still relative, try to resolve
-    if not config_path.is_absolute():
-        if config_path.exists():
-            config_path = config_path.resolve()
-        else:
-            # Try relative to src_new directory
-            _THIS_FILE = Path(__file__).resolve()
-            _SRC_NEW_DIR = _THIS_FILE.parent.parent.parent
-            potential_path = _SRC_NEW_DIR / config_path
-            if potential_path.exists():
-                config_path = potential_path.resolve()
-            else:
-                # Try configs subdirectory
-                potential_path = _SRC_NEW_DIR / "configs" / config_path.name
-                if potential_path.exists():
-                    config_path = potential_path.resolve()
-    
+    config_path = resolve_path(args.config)
+
     if not config_path.exists():
-        raise FileNotFoundError(f"Config file not found: {args.config} (resolved to: {config_path})")
-    
+        raise FileNotFoundError(f"Config file not found: {args.config}")
+
     # Load config
     with open(config_path, 'r') as f:
         config = yaml.safe_load(f)
@@ -231,11 +329,12 @@ def main():
     set_seed(seed)
 
     # Device
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device_str = config['model'].get('device', 'cuda')
+    device = torch.device(device_str if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
 
     # Output directory
-    timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+    timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M')
     output_dir = Path(config['paths']['output_dir']) / timestamp
     output_dir.mkdir(parents=True, exist_ok=True)
     print(f"Output directory: {output_dir}")
@@ -247,8 +346,6 @@ def main():
     # Resolve paths
     root_dir = resolve_path(config['data']['root_dir'])
     condition_csv = resolve_path(config['data']['condition_csv'])
-
-    # Add train subdirectory to root_dir (data structure: root_dir/train/comp_dir)
     train_root_dir = root_dir / 'train'
 
     # Create dataset
@@ -274,30 +371,33 @@ def main():
 
     print(f"Train dataset size: {len(train_dataset)}")
 
-    # Create model
-    num_components = len(config['data']['component_dirs'])
-    use_conditioning = config['data'].get('normalized', False)
-    cond_dim = len(config['data'].get('condition_columns', [])) if use_conditioning else 0
+    # Create params object (ICTAI style)
+    params_dict = {
+        'latent_dim': config['model']['latent_dim'],
+        'diagonal_transf': config['model'].get('diagonal_transf', 'softplus'),
+        'hidden_dim': config['model']['hidden_dim'],
+        'n_layers': config['model']['n_layers'],
+        'device': str(device),
+        'reduced_diag': config['model'].get('reduced_diag', False),
+        'nf': config['model']['nf'],
+        'nf_max_e': config['model'].get('nf_max_e', 512),
+        'nf_max_d': config['model'].get('nf_max_d', 256),
+    }
+    params = Params(params_dict)
 
-    model = GMRF_MVAE(
-        num_components=num_components,
-        latent_dim=config['model']['latent_dim'],
-        nf=config['model']['nf'],
-        nf_max=config['model'].get('nf_max', 512),  # Backward compatibility
-        nf_max_e=config['model'].get('nf_max_e', 512),  # Encoder max filters
-        nf_max_d=config['model'].get('nf_max_d', 256),  # Decoder max filters
-        hidden_dim=config['model']['hidden_dim'],
-        n_layers=config['model']['n_layers'],
-        beta=config['model']['beta'],
-        diagonal_transf=config['model'].get('diagonal_transf', 'softplus'),
-        cond_dim=cond_dim,
-        dropout_p=config['model'].get('dropout_p', 0.0),
-        use_resnet=config['model'].get('use_resnet', True),  # Default: True 
-    ).to(device)
+    # Create model (ICTAI style)
+    model = Epure_GMMVAE(params).to(device)
 
     num_params = sum(p.numel() for p in model.parameters())
-    config['model']['num_parameters'] = num_params
     print(f"\nModel parameters: {num_params:,}")
+
+    # Count params by component (like ICTAI)
+    print(f"  - cov params: {sum(p.numel() for p in model.off_diag_cov.parameters()):,}")
+    for i, vae in enumerate(model.modality_vaes):
+        if i == 0:
+            print(f"  - vae params (each): {sum(p.numel() for p in vae.parameters()):,}")
+            print(f"    - enc params: {sum(p.numel() for p in vae.enc.parameters()):,}")
+            print(f"    - dec params: {sum(p.numel() for p in vae.dec.parameters()):,}")
 
     # Train
     train(model, train_loader, config, device, output_dir)

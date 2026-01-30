@@ -1,21 +1,21 @@
 #!/usr/bin/env python3
 """
-Sampling script for GMRF MVAE.
+Sampling script for GMRF MVAE - ICTAI implementation.
 
 3 Sampling Modes:
 1. Unconditional: Sample from prior (no conditioning)
 2. Conditional: Sample with specific conditions
-3. Inpainting/Cross-modal: Generate missing components
+3. Inpainting/Cross-modal: Generate missing components using Gaussian conditional
 
 Usage:
     # Unconditional sampling
-    python src_new/models/gmrf_mvae/sample.py --checkpoint outputs/gmrf_mvae/run_xxx/check/checkpoint_best.pt --mode unconditional --num_samples 100
+    python src/models/gmrf_mvae/sample.py --checkpoint outputs/gmrf_mvae/run_xxx/check/checkpoint_best.pt --mode unconditional --num_samples 100
 
     # Conditional sampling
-    python src_new/models/gmrf_mvae/sample.py --checkpoint outputs/gmrf_mvae/run_xxx/check/checkpoint_best.pt --mode conditional --num_samples 100
+    python src/models/gmrf_mvae/sample.py --checkpoint outputs/gmrf_mvae/run_xxx/check/checkpoint_best.pt --mode conditional --num_samples 100
 
     # Inpainting (preserve specific components, generate the rest)
-    python src_new/models/gmrf_mvae/sample.py --checkpoint outputs/gmrf_mvae/run_xxx/check/checkpoint_best.pt --mode inpainting --components group_nc group_km
+    python src/models/gmrf_mvae/sample.py --checkpoint outputs/gmrf_mvae/run_xxx/check/checkpoint_best.pt --mode inpainting --components group_nc group_km
 """
 
 import argparse
@@ -29,11 +29,26 @@ from PIL import Image
 import numpy as np
 from tqdm import tqdm
 
-# Add src_new to path
+# Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from models.gmrf_mvae.model import GMRF_MVAE
+from models.gmrf_mvae.model import Epure_GMMVAE
 from datasets.continuous import MultiComponentDataset
+
+
+class Params:
+    """Parameter container matching ICTAI implementation."""
+
+    def __init__(self, params_dict):
+        self.latent_dim = params_dict.get('latent_dim', 4)
+        self.diagonal_transf = params_dict.get('diagonal_transf', 'softplus')
+        self.hidden_dim = params_dict.get('hidden_dim', 128)
+        self.n_layers = params_dict.get('n_layers', 2)
+        self.device = params_dict.get('device', 'cuda')
+        self.reduced_diag = params_dict.get('reduced_diag', False)
+        self.nf = params_dict.get('nf', 32)
+        self.nf_max_e = params_dict.get('nf_max_e', 512)
+        self.nf_max_d = params_dict.get('nf_max_d', 256)
 
 
 def resolve_path(path_str: str, base_dir: Path = None) -> Path:
@@ -87,26 +102,27 @@ def set_seed(seed):
     np.random.seed(seed)
 
 
-def load_model(checkpoint_path: Path, config: dict, device: torch.device) -> GMRF_MVAE:
-    """Load trained GMRF MVAE model."""
-    num_components = len(config['data']['component_dirs'])
-    use_conditioning = config['data'].get('normalized', False)
-    cond_dim = len(config['data'].get('condition_columns', [])) if use_conditioning else 0
+def load_model(checkpoint_path: Path, config: dict, device: torch.device) -> Epure_GMMVAE:
+    """Load trained GMRF MVAE model (ICTAI implementation)."""
+    # Create params object (ICTAI style)
+    params_dict = {
+        'latent_dim': config['model']['latent_dim'],
+        'diagonal_transf': config['model'].get('diagonal_transf', 'softplus'),
+        'hidden_dim': config['model']['hidden_dim'],
+        'n_layers': config['model']['n_layers'],
+        'device': str(device),
+        'reduced_diag': config['model'].get('reduced_diag', False),
+        'nf': config['model']['nf'],
+        'nf_max_e': config['model'].get('nf_max_e', 512),
+        'nf_max_d': config['model'].get('nf_max_d', 256),
+    }
+    params = Params(params_dict)
 
-    model = GMRF_MVAE(
-        num_components=num_components,
-        latent_dim=config['model']['latent_dim'],
-        nf=config['model']['nf'],
-        nf_max=config['model']['nf_max'],
-        hidden_dim=config['model']['hidden_dim'],
-        n_layers=config['model']['n_layers'],
-        beta=config['model']['beta'],
-        cond_dim=cond_dim,
-        dropout_p=config['model']['dropout_p']
-    ).to(device)
+    # Create model (ICTAI style - 5 modalities for epure)
+    model = Epure_GMMVAE(params).to(device)
 
     # Load checkpoint
-    checkpoint = torch.load(checkpoint_path, map_location=device)
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     if 'model_state_dict' in checkpoint:
         model.load_state_dict(checkpoint['model_state_dict'])
     else:
@@ -153,7 +169,7 @@ def save_component_images(samples, out_root, prefix, component_names):
 
 
 def sample_unconditional(
-    model: GMRF_MVAE,
+    model: Epure_GMMVAE,
     num_samples: int,
     save_root: str,
     date_str: str,
@@ -163,29 +179,16 @@ def sample_unconditional(
     batch_size: int = 64
 ):
     """
-    Mode 1: Unconditional sampling from prior with random conditions from dataset.
+    Mode 1: Unconditional sampling from GMRF prior.
 
-    Since the model was trained with conditioning, we sample random conditions
-    from the dataset to avoid the zero-embedding problem.
+    Uses the ICTAI-style generate_for_calculating_unconditional_coherence method.
     """
     out_root = os.path.join(save_root, date_str)
     os.makedirs(os.path.join(out_root, "full"), exist_ok=True)
     for cname in component_names:
         os.makedirs(os.path.join(out_root, cname), exist_ok=True)
 
-    print(f"\nGenerating {num_samples} unconditional samples (with random conditions)...")
-
-    # Load conditions from CSV and sample randomly
-    condition_csv = resolve_path(config['data']['condition_csv'])
-    condition_cols = config['data'].get('condition_columns', [])
-
-    if condition_cols:
-        conditions_df = pd.read_csv(condition_csv)
-        sampled_indices = np.random.choice(len(conditions_df), size=num_samples, replace=True)
-        conditions = conditions_df.iloc[sampled_indices][condition_cols].values
-        conditions = torch.tensor(conditions, dtype=torch.float32, device=device)
-    else:
-        conditions = None
+    print(f"\nGenerating {num_samples} unconditional samples from GMRF prior...")
 
     n_done = 0
     num_batches = (num_samples + batch_size - 1) // batch_size
@@ -194,13 +197,12 @@ def sample_unconditional(
         for i in tqdm(range(num_batches), desc="Sampling"):
             batch_sz = min(batch_size, num_samples - n_done)
 
-            # Get batch conditions
-            if conditions is not None:
-                batch_cond = conditions[n_done:n_done + batch_sz]
-            else:
-                batch_cond = None
+            # Use ICTAI-style unconditional generation
+            # Returns list of [B, 1, H, W] tensors, one per modality
+            generations = model.generate_for_calculating_unconditional_coherence(batch_sz)
 
-            samples = model.sample(batch_sz, cond=batch_cond, device=device)  # [B, C, H, W]
+            # Stack into [B, C, H, W]
+            samples = torch.cat(generations, dim=1)
 
             # Save samples
             prefix = f"img{n_done:04d}"
@@ -208,11 +210,11 @@ def sample_unconditional(
 
             n_done += batch_sz
 
-    print(f"\nDone – unconditional samples saved under {out_root}")
+    print(f"\nDone – {n_done} unconditional samples saved under {out_root}")
 
 
 def sample_conditional(
-    model: GMRF_MVAE,
+    model: Epure_GMMVAE,
     config: dict,
     num_samples: int,
     save_root: str,
@@ -222,9 +224,10 @@ def sample_conditional(
     batch_size: int = 64
 ):
     """
-    Mode 2: Conditional sampling with specific conditions.
+    Mode 2: Conditional reconstruction - encode real data and decode.
 
-    Samples conditions from the dataset CSV.
+    For ICTAI-style GMRF MVAE, this encodes the test images through the
+    VAE encoders and decodes the samples from the posterior.
     """
     out_root = os.path.join(save_root, date_str)
     os.makedirs(os.path.join(out_root, "full"), exist_ok=True)
@@ -235,31 +238,41 @@ def sample_conditional(
     test_loader = create_test_loader(config, batch_size)
     actual_num_samples = len(test_loader.dataset)
 
-    print(f"\nGenerating {actual_num_samples} conditional samples (test set size)...")
+    print(f"\nGenerating {actual_num_samples} conditional reconstructions (test set size)...")
 
     n_done = 0
 
     with torch.no_grad():
         for batch_idx, batch_data in enumerate(tqdm(test_loader, desc="Sampling")):
             x, cond = batch_data
-            if cond is not None:
-                cond = cond.to(device)
+            x = x.to(device)  # [B, C, H, W]
 
-            batch_sz = cond.size(0) if cond is not None else x.size(0)
+            B, C = x.size(0), x.size(1)
 
-            samples = model.sample(batch_sz, cond=cond, device=device)
+            # Convert stacked tensor to list of tensors (ICTAI format)
+            data = [x[:, i:i+1] for i in range(C)]
+
+            # Forward pass (ICTAI style - encodes and decodes)
+            model(data)
+
+            # Get reconstructions from model (stored after forward pass)
+            # recons is a list of [B, 1, H, W] tensors
+            recons = model.recons
+
+            # Stack into [B, C, H, W]
+            samples = torch.cat(recons, dim=1)
 
             # Save samples
             prefix = f"img{n_done:04d}"
             save_component_images(samples, out_root, prefix, component_names)
 
-            n_done += batch_sz
+            n_done += B
 
     print(f"\nDone – {n_done} conditional samples saved under {out_root}")
 
 
 def sample_inpainting(
-    model: GMRF_MVAE,
+    model: Epure_GMMVAE,
     test_loader,
     save_root: str,
     date_str: str,
@@ -269,7 +282,10 @@ def sample_inpainting(
     verbose: bool = True
 ):
     """
-    Mode 3: Inpainting - preserve specific components, generate the rest.
+    Mode 3: Inpainting using ICTAI-style Gaussian conditional.
+
+    Uses the GMRF structure to sample missing modalities conditioned on
+    observed modalities via Gaussian conditional distribution.
 
     Structure: samples/<model>/<date>/<preserved_component>/full/
                                                             /<all_components>/
@@ -288,33 +304,55 @@ def sample_inpainting(
             os.makedirs(os.path.join(preserve_dir, comp_name), exist_ok=True)
 
     if verbose:
-        print(f"\nConditional inpainting for GMRF MVAE")
+        print(f"\nCross-modal generation using Gaussian conditional (ICTAI style)")
         print(f"Preserving components: {components_to_preserve}")
         print(f"Processing {len(test_loader)} batches")
 
     # Global counter for each preserved component
     counters = {comp: 0 for comp in components_to_preserve}
+    latent_dim = model.latent_dim
+    num_modalities = len(component_names)
 
     with torch.no_grad():
         for batch_idx, batch_data in enumerate(tqdm(test_loader, desc="Inpainting")):
             x, cond = batch_data
             x = x.to(device)  # [B, C, H, W]
-            if cond is not None:
-                cond = cond.to(device)
 
             B, C, H, W = x.shape
 
             # For each preserved component
             for preserve_comp, preserve_idx in zip(components_to_preserve, preserve_indices):
-                # Create mask: only preserve this component
-                masked_x = torch.zeros_like(x)
-                masked_x[:, preserve_idx] = x[:, preserve_idx]
+                # Convert to list format for ICTAI model
+                data = [x[:, i:i+1] for i in range(C)]
 
-                # Forward pass through model (which encodes each component)
-                recon_list, mus, logvars = model(masked_x, cond)
+                # Encode only the observed modality
+                observed_data = [data[preserve_idx]]
+
+                # Get observed modality VAE
+                vae = model.modality_vaes[preserve_idx]
+                mu, diag = vae.enc(observed_data[0])
+                z_obs = mu  # Use mean for deterministic encoding
+
+                # Build observed indices for latent space
+                # Each modality has latent_dim dimensions
+                observed_indices = list(range(
+                    preserve_idx * latent_dim,
+                    (preserve_idx + 1) * latent_dim
+                ))
+
+                # Use Gaussian conditional to generate missing modalities
+                # conditional_generate returns samples for ALL dimensions
+                z_full = model.conditional_generate(z_obs, observed_indices)  # [B, total_latent_dim]
+
+                # Split z_full into per-modality latents and decode
+                recons = []
+                for m in range(num_modalities):
+                    z_m = z_full[:, m * latent_dim:(m + 1) * latent_dim]
+                    recon_m = model.modality_vaes[m].dec(z_m)
+                    recons.append(recon_m)
 
                 # Stack reconstructions: List of [B, 1, H, W] -> [B, C, H, W]
-                recon = torch.cat(recon_list, dim=1)  # [B, C, H, W]
+                recon = torch.cat(recons, dim=1)  # [B, C, H, W]
 
                 # Save results in preserve_comp subfolder
                 preserve_dir = os.path.join(out_root, preserve_comp)

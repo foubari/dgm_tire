@@ -1,8 +1,7 @@
 """
-GMRF MVAE - Simplified but functional version.
+GMRF MVAE - Full implementation matching ICTAI architecture exactly.
 
-For full implementation with covariance assembly, refer to ICTAI codebase.
-This version provides the core architecture with factorized approximation.
+Adapted for EPURE dataset with 5 components and 64x32 images.
 """
 
 import numpy as np
@@ -15,485 +14,543 @@ from .cov_model import OffDiagonalCov
 from .resnet_block import ResnetBlock, actvn
 
 
-class ComponentVAE(nn.Module):
-    """VAE for a single component."""
+# Constants (matching ICTAI)
+class Constants:
+    eta = 1e-6
+    relu_shift = 1
+    exp_shift = 0
+    exp_factor = 1
 
-    def __init__(self, latent_dim=16, nf=64, nf_max=512, dropout_p=0.1, cond_dim=2):
+
+def assemble_covariance_matrix_corrected(mu_list, sigma_list, off_diag_coeffs, modalities_dim, epsilon=0.9, delta=1e-6):
+    """
+    Assembles the covariance matrix for a multimodal VAE, ensuring symmetry and positive definiteness.
+
+    Exact copy from ICTAI implementation.
+
+    Parameters:
+    - mu_list: List of tensors, each of shape (batch_size, dim_k), mean vectors from modality encoders.
+    - sigma_list: List of tensors, each of shape (batch_size, dim_k, dim_k), diagonal covariance matrices.
+    - off_diag_coeffs: Tensor of shape (batch_size, num_off_diag_elements), output from the global encoder.
+    - modalities_dim: List of ints, dimensions of each modality.
+    - epsilon: Scalar or Tensor of shape (total_dim,), with values less than 1.
+    - delta: Small positive scalar to prevent division by zero.
+
+    Returns:
+    - covariance_matrix: Tensor of shape (batch_size, total_dim, total_dim), the assembled covariance matrix.
+    """
+    total_dim = sum(modalities_dim)
+    batch_size = mu_list[0].shape[0]
+    device = mu_list[0].device
+
+    # 1. Assemble Lambda, the big diagonal matrix from sigma_list
+    sigma_diags = [torch.diagonal(sigma, dim1=-2, dim2=-1) for sigma in sigma_list]
+    v = torch.cat(sigma_diags, dim=1)  # Shape: (batch_size, total_dim)
+
+    # 2. Assemble M from off_diag_coeffs
+    M = torch.zeros((batch_size, total_dim, total_dim), device=device)
+
+    # Compute start and end indices for each modality
+    start_indices = []
+    end_indices = []
+    start = 0
+    for dim in modalities_dim:
+        start_indices.append(start)
+        end = start + dim
+        end_indices.append(end)
+        start = end
+
+    # Prepare to fill M
+    num_modalities = len(modalities_dim)
+    off_diag_block_sizes = []
+    modality_pairs = []
+    for i in range(1, num_modalities):
+        for j in range(i):
+            block_size = modalities_dim[i] * modalities_dim[j]
+            off_diag_block_sizes.append(block_size)
+            modality_pairs.append((i, j))
+
+    # Compute cumulative sum to get offsets
+    off_diag_block_starts = [0]
+    for size in off_diag_block_sizes:
+        off_diag_block_starts.append(off_diag_block_starts[-1] + size)
+    off_diag_block_starts = off_diag_block_starts[:-1]
+
+    # Fill M with off-diagonal blocks
+    for block_idx, (i, j) in enumerate(modality_pairs):
+        start = off_diag_block_starts[block_idx]
+        end = start + off_diag_block_sizes[block_idx]
+        block_coeffs = off_diag_coeffs[:, start:end]
+        block_coeffs = block_coeffs.view(batch_size, modalities_dim[i], modalities_dim[j])
+        M[:, start_indices[i]:end_indices[i], start_indices[j]:end_indices[j]] = block_coeffs
+        M[:, start_indices[j]:end_indices[j], start_indices[i]:end_indices[i]] = block_coeffs.transpose(1, 2)
+
+    # 3. Compute s_i = sum_{j != i} |M_{ij}|
+    s = torch.sum(torch.abs(M), dim=2) - torch.abs(torch.diagonal(M, dim1=1, dim2=2))
+    s = s + delta
+
+    # 4. Compute alpha_i
+    if isinstance(epsilon, float) or isinstance(epsilon, int):
+        epsilon = torch.full_like(v, epsilon)
+    else:
+        epsilon = epsilon.to(device)
+
+    alpha = torch.minimum(torch.ones_like(s), (v * epsilon) / s)
+
+    # 5. Compute alpha_{ij} = sqrt(alpha_i * alpha_j)
+    alpha_i_sqrt = torch.sqrt(alpha)
+    alpha_matrix = alpha_i_sqrt.unsqueeze(2) * alpha_i_sqrt.unsqueeze(1)
+
+    # 6. Scale M symmetrically
+    M_adjusted = M * alpha_matrix
+
+    # 7. Construct the covariance matrix
+    covariance_matrix = torch.diag_embed(v) + M_adjusted
+
+    return covariance_matrix
+
+
+class Encoder(nn.Module):
+    """
+    Encoder network for GMRF VAE - ResNet architecture.
+
+    Adapted for EPURE images (64x32) from ICTAI original (64x64).
+    """
+
+    def __init__(self, latent_dim, diagonal_transf, nf=32, nf_max=512):
         super().__init__()
+        self.diagonal_transf = diagonal_transf
         self.latent_dim = latent_dim
+
+        # EPURE format: 64x32 -> final size 8x4
+        self.s0_h = 8  # Final height
+        self.s0_w = 4  # Final width
         self.nf = nf
         self.nf_max = nf_max
 
-        # Calculate channel progression with nf_max capping (ICTAI alignment)
-        nf1 = min(nf, nf_max)        # Level 1: min(nf, nf_max)
-        nf2 = min(nf*2, nf_max)      # Level 2: min(nf*2, nf_max)
-        nf3 = min(nf*4, nf_max)      # Level 3: min(nf*4, nf_max)
+        # Number of downsampling layers: 64 -> 32 -> 16 -> 8 (3 layers)
+        size = 64  # Use height for nlayers calculation
+        nlayers = int(np.log2(size / self.s0_h))  # = 3
+        self.nf0 = min(nf_max, nf * 2**nlayers)
 
-        # Encoder: (B, 1, 64, 32) -> (B, latent_dim)
-        self.encoder = nn.Sequential(
-            nn.Conv2d(1, nf1, 4, 2, 1), nn.BatchNorm2d(nf1), nn.LeakyReLU(0.2),  # 32x16
-            nn.Conv2d(nf1, nf2, 4, 2, 1), nn.BatchNorm2d(nf2), nn.LeakyReLU(0.2),  # 16x8
-            nn.Conv2d(nf2, nf3, 4, 2, 1), nn.BatchNorm2d(nf3), nn.LeakyReLU(0.2),  # 8x4
-            nn.Flatten(),
-            nn.Dropout(dropout_p)
-        )
-
-        enc_out_dim = nf3 * 8 * 4  # Use nf3 (capped value)
-        self.fc_mu = nn.Linear(enc_out_dim, latent_dim)
-        self.fc_logvar = nn.Linear(enc_out_dim, latent_dim)
-        self.fc_cov_emb = nn.Linear(enc_out_dim, latent_dim)  # For OffDiagonalCov
-
-        # Decoder with conditioning
-        if cond_dim > 0:
-            self.cond_mlp = nn.Sequential(
-                nn.Linear(cond_dim, 128), nn.GELU(),
-                nn.Linear(128, 256)
-            )
-            dec_input_dim = latent_dim + 256
-        else:
-            self.cond_mlp = None
-            dec_input_dim = latent_dim
-
-        self.fc_dec = nn.Linear(dec_input_dim, nf3 * 8 * 4)  # Use nf3 (capped value)
-        self.decoder = nn.Sequential(
-            nn.ConvTranspose2d(nf3, nf2, 4, 2, 1), nn.BatchNorm2d(nf2), nn.ReLU(),  # 16x8
-            nn.ConvTranspose2d(nf2, nf1, 4, 2, 1), nn.BatchNorm2d(nf1), nn.ReLU(),  # 32x16
-            nn.ConvTranspose2d(nf1, 1, 4, 2, 1), nn.Sigmoid()  # 64x32
-        )
-
-    def encode(self, x):
-        """
-        Args:
-            x: (B, 1, 64, 32)
-
-        Returns:
-            mu, logvar, cov_emb
-        """
-        h = self.encoder(x)
-        mu = self.fc_mu(h)
-        logvar = self.fc_logvar(h)
-        logvar = F.softplus(logvar)
-        cov_emb = self.fc_cov_emb(h)
-        return mu, logvar, cov_emb
-
-    def decode(self, z, cond=None):
-        """
-        Args:
-            z: (B, latent_dim)
-            cond: (B, cond_dim) or None
-
-        Returns:
-            recon: (B, 1, 64, 32)
-        """
-        if self.cond_mlp is not None:
-            if cond is not None:
-                cond_emb = self.cond_mlp(cond)
-            else:
-                # Use zero conditioning for unconditional generation
-                cond_emb = torch.zeros(z.size(0), 256, device=z.device, dtype=z.dtype)
-            z = torch.cat([z, cond_emb], dim=1)
-
-        h = self.fc_dec(z)
-        h = h.view(h.size(0), -1, 8, 4)
-        recon = self.decoder(h)
-        return recon
-
-
-class ComponentVAE_Resnet(nn.Module):
-    """
-    VAE for a single component - ResNet architecture (ICTAI alignment).
-
-    This implementation uses ResnetBlock with skip connections,
-    matching the ICTAI original exactly.
-    """
-
-    def __init__(
-        self,
-        latent_dim=4,
-        nf=32,
-        nf_max_e=512,
-        nf_max_d=256,
-        diagonal_transf="softplus",
-        cond_dim=0,
-    ):
-        super().__init__()
-        self.latent_dim = latent_dim
-        self.nf = nf
-        self.nf_max_e = nf_max_e
-        self.nf_max_d = nf_max_d
-        self.diagonal_transf = diagonal_transf
-
-        # Image size: 64x32 → 8x4 (3 downsampling layers)
-        dataSize = [1, 64, 32]  # EPURE format (height x width)
-        s0_h = self.s0_h = 8  # Final height
-        s0_w = self.s0_w = 4  # Final width
-        size = dataSize[1]  # Use height for nlayers calculation
-
-        # ENCODER
-        nlayers = int(np.log2(size / s0_h))  # 3 layers: 64→32→16→8
-        self.nf0_e = min(nf_max_e, nf * 2**nlayers)  # min(512, 32*8) = 256
-
-        # Initial conv: 1 → nf
+        # Initial conv: 1 -> nf
         self.conv_img_z = nn.Conv2d(1, nf, 3, padding=1)
 
         # ResNet blocks with downsampling
         blocks_z = [ResnetBlock(nf, nf)]
 
         for i in range(nlayers):
-            nf0 = min(nf * 2**i, nf_max_e)
-            nf1 = min(nf * 2 ** (i + 1), nf_max_e)
+            nf0 = min(nf * 2**i, nf_max)
+            nf1 = min(nf * 2**(i+1), nf_max)
             blocks_z += [
-                nn.AvgPool2d(3, stride=2, padding=1),  # Downsample
+                nn.AvgPool2d(3, stride=2, padding=1),
                 ResnetBlock(nf0, nf1),
             ]
 
         self.resnet_z = nn.Sequential(*blocks_z)
 
         # Output layers
-        enc_out_dim = self.nf0_e * s0_h * s0_w  # 256 * 8 * 4 = 8192
+        enc_out_dim = self.nf0 * self.s0_h * self.s0_w  # e.g., 256 * 8 * 4 = 8192
         self.fc_mu_z = nn.Linear(enc_out_dim, latent_dim)
         self.lambda_diag_layer = nn.Linear(enc_out_dim, latent_dim)
-        self.cov_layer = nn.Linear(enc_out_dim, latent_dim)  # For OffDiagonalCov
+        self.cov_layer = nn.Linear(enc_out_dim, latent_dim)
+        self.cov_embedding = None  # Will be fed to the off diagonal model
 
-        # DECODER
-        self.nf0_d = min(nf_max_d, nf * 2**nlayers)  # min(256, 32*8) = 256
-
-        # Conditioning MLP (optional)
-        if cond_dim > 0:
-            self.cond_mlp = nn.Sequential(
-                nn.Linear(cond_dim, 128), nn.GELU(), nn.Linear(128, 256)
-            )
-            dec_input_dim = latent_dim + 256
-        else:
-            self.cond_mlp = None
-            dec_input_dim = latent_dim
-
-        self.fc_dec = nn.Linear(dec_input_dim, self.nf0_d * s0_h * s0_w)
-
-        # ResNet blocks with upsampling
-        blocks_dec = []
-        for i in range(nlayers):
-            nf0 = min(nf * 2 ** (nlayers - i), nf_max_d)
-            nf1 = min(nf * 2 ** (nlayers - i - 1), nf_max_d)
-            blocks_dec += [
-                ResnetBlock(nf0, nf1),
-                nn.Upsample(scale_factor=2),  # Nearest-neighbor upsampling
-            ]
-
-        blocks_dec += [ResnetBlock(nf, nf)]
-
-        self.resnet_dec = nn.Sequential(*blocks_dec)
-        self.conv_img_dec = nn.Conv2d(nf, 1, 3, padding=1)
-
-    def encode(self, x):
+    def forward(self, x):
         """
-        Encode input to latent distribution.
-
         Args:
             x: (B, 1, 64, 32)
 
         Returns:
-            mu_z: Mean (B, latent_dim)
-            lambda_z: Diagonal covariance matrix (B, latent_dim, latent_dim)
-            cov_emb: Covariance embedding for OffDiagonalCov (B, latent_dim)
+            mu_z: (B, latent_dim)
+            lambda_z: (B, latent_dim, latent_dim) diagonal matrix
         """
         out_z = self.conv_img_z(x)
         out_z = self.resnet_z(out_z)
-        out_z = out_z.view(out_z.size(0), self.nf0_e * self.s0_h * self.s0_w)
+        out_z = out_z.view(out_z.size(0), self.nf0 * self.s0_h * self.s0_w)
+
+        # Store embedding for off-diagonal covariance model
+        self.cov_embedding = self.cov_layer(out_z)
 
         mu_z = self.fc_mu_z(out_z)
-        cov_emb = self.cov_layer(out_z)
 
-        # Diagonal transformation
+        # Diagonal transformation (must be positive)
         raw_diag = self.lambda_diag_layer(out_z)
 
-        if self.diagonal_transf == "softplus":
-            lambda_diag = F.softplus(raw_diag) + 1e-6
-        elif self.diagonal_transf == "relu":
-            lambda_diag = F.relu(raw_diag) + 1.0
-        elif self.diagonal_transf == "exp":
-            lambda_diag = torch.exp(raw_diag)
-        elif self.diagonal_transf == "square":
+        if self.diagonal_transf == 'relu':
+            lambda_diag = F.relu(raw_diag) + Constants.relu_shift
+        elif self.diagonal_transf == 'softplus':
+            lambda_diag = F.softplus(raw_diag) + Constants.relu_shift
+        elif self.diagonal_transf == 'square':
             lambda_diag = torch.square(raw_diag)
-        elif self.diagonal_transf == "sig":
+        elif self.diagonal_transf == 'exp':
+            lambda_diag = torch.exp(raw_diag)
+        elif self.diagonal_transf == 'sig':
             lambda_diag = torch.sigmoid(raw_diag)
         else:
-            raise ValueError(f"Unknown diagonal_transf: {self.diagonal_transf}")
+            raise ValueError(f"Invalid diagonal_transf: {self.diagonal_transf}")
 
-        # Create diagonal matrix
-        lambda_z = torch.zeros(
-            out_z.size(0), self.latent_dim, self.latent_dim, device=out_z.device
-        )
+        # Construct diagonal matrix
+        lambda_z = torch.zeros(out_z.size(0), self.latent_dim, self.latent_dim, device=out_z.device)
         lambda_z.diagonal(dim1=-2, dim2=-1).copy_(lambda_diag)
 
-        return mu_z, lambda_z, cov_emb
+        return mu_z, lambda_z
 
-    def decode(self, z, cond=None):
+
+class Decoder(nn.Module):
+    """
+    Decoder network for GMRF VAE - ResNet architecture.
+
+    Adapted for EPURE images (64x32) from ICTAI original (64x64).
+    """
+
+    def __init__(self, latent_dim, nf=32, nf_max=256):
+        super().__init__()
+        self.latent_dim = latent_dim
+
+        # EPURE format: start from 8x4 -> upsample to 64x32
+        self.s0_h = 8
+        self.s0_w = 4
+        self.nf = nf
+        self.nf_max = nf_max
+
+        size = 64
+        nlayers = int(np.log2(size / self.s0_h))  # = 3
+        self.nf0 = min(nf_max, nf * 2**nlayers)
+
+        self.fc = nn.Linear(latent_dim, self.nf0 * self.s0_h * self.s0_w)
+
+        # ResNet blocks with upsampling
+        blocks = []
+        for i in range(nlayers):
+            nf0 = min(nf * 2**(nlayers-i), nf_max)
+            nf1 = min(nf * 2**(nlayers-i-1), nf_max)
+            blocks += [
+                ResnetBlock(nf0, nf1),
+                nn.Upsample(scale_factor=2)
+            ]
+
+        blocks += [ResnetBlock(nf, nf)]
+
+        self.resnet = nn.Sequential(*blocks)
+        self.conv_img = nn.Conv2d(nf, 1, 3, padding=1)
+
+    def forward(self, z):
         """
-        Decode latent to reconstruction.
-
         Args:
             z: (B, latent_dim)
-            cond: (B, cond_dim) or None
 
         Returns:
-            recon: (B, 1, 64, 32)
+            out: (B, 1, 64, 32)
         """
-        if self.cond_mlp is not None:
-            if cond is not None:
-                cond_emb = self.cond_mlp(cond)
-            else:
-                cond_emb = torch.zeros(
-                    z.size(0), 256, device=z.device, dtype=z.dtype
-                )
-            z = torch.cat([z, cond_emb], dim=1)
-
-        out = self.fc_dec(z).view(-1, self.nf0_d, self.s0_h, self.s0_w)
-        out = self.resnet_dec(out)
-        out = self.conv_img_dec(actvn(out))
-
+        out = self.fc(z).view(-1, self.nf0, self.s0_h, self.s0_w)
+        out = self.resnet(out)
+        out = self.conv_img(actvn(out))
         return out
+
+
+class GMRF_VAE(nn.Module):
+    """
+    Base GMRF VAE for a single modality.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.enc = None
+        self.dec = None
+        self.latent_dim = None
+        self.modelName = 'gmrf_vae'
+        self.llik_scaling = 1.0
+
+
+class GMRF_VAE_EPURE(GMRF_VAE):
+    """
+    GMRF VAE for EPURE dataset (64x32 images).
+    """
+
+    def __init__(self, params):
+        super().__init__()
+        self.enc = Encoder(params.latent_dim, params.diagonal_transf, params.nf, params.nf_max_e)
+        self.dec = Decoder(params.latent_dim, params.nf, params.nf_max_d)
+        self.latent_dim = params.latent_dim
+        self.modelName = 'gmrf_vae_epure'
+        self.params = params
 
 
 class GMRF_MVAE(nn.Module):
     """
-    GMRF Multimodal VAE.
+    GMRF Multimodal VAE - Full implementation matching ICTAI exactly.
 
-    Simplified version with factorized ELBO for efficiency.
-    For full GMRF prior with covariance assembly, see ICTAI implementation.
+    This model uses:
+    - Full covariance matrix assembly with off-diagonal elements
+    - Learnable prior p(z) with full covariance structure
+    - Gaussian conditional for cross-modal generation
     """
 
-    def __init__(
-        self,
-        num_components=5,
-        latent_dim=16,
-        nf=64,
-        nf_max=512,  # Backward compatibility (used when use_resnet=False)
-        nf_max_e=512,  # Encoder max filters (ResNet mode)
-        nf_max_d=256,  # Decoder max filters (ResNet mode)
-        hidden_dim=256,
-        n_layers=2,
-        beta=1.0,
-        cond_dim=2,
-        dropout_p=0.1,
-        diagonal_transf='softplus',  # For ResNet mode
-        use_resnet=True,  # ICTAI alignment: True for ResNet, False for simple Conv
-    ):
+    def __init__(self, params, off_diag_cov_class, *modality_vae_classes):
         super().__init__()
-        self.num_components = num_components
-        self.latent_dim = latent_dim
-        self.beta = beta
-        self.use_resnet = use_resnet
 
-        # Component VAEs - choose architecture
-        if use_resnet:
-            # ICTAI original: ResNet architecture
-            VAEClass = ComponentVAE_Resnet
-            vae_kwargs = {
-                'latent_dim': latent_dim,
-                'nf': nf,
-                'nf_max_e': nf_max_e,
-                'nf_max_d': nf_max_d,
-                'diagonal_transf': diagonal_transf,
-                'cond_dim': cond_dim,
-            }
-        else:
-            # Fallback: Simple Conv2d architecture
-            VAEClass = ComponentVAE
-            vae_kwargs = {
-                'latent_dim': latent_dim,
-                'nf': nf,
-                'nf_max': nf_max,
-                'dropout_p': dropout_p,
-                'cond_dim': cond_dim,
-            }
+        self.diagonal_transf = params.diagonal_transf
+        self.device = params.device
 
-        self.component_vaes = nn.ModuleList([
-            VAEClass(**vae_kwargs)
-            for _ in range(num_components)
+        # Individual VAEs for each modality
+        self.modality_vaes = nn.ModuleList([
+            vae_class(params).to(params.device) for vae_class in modality_vae_classes
         ])
 
-        # OffDiagonalCov network (optional, for future full implementation)
-        self.off_diag_cov = OffDiagonalCov(
-            input_dims=[latent_dim] * num_components,
-            encoded_dims=[latent_dim] * num_components,
-            hidden_dim=hidden_dim,
-            n_layers=n_layers
+        # Off-diagonal covariance model
+        cov_input_dims = [params.latent_dim for _ in range(len(self.modality_vaes))]
+        encoded_dims = [params.latent_dim for _ in range(len(self.modality_vaes))]
+        self.encoded_dims = encoded_dims
+
+        self.off_diag_cov = off_diag_cov_class(
+            input_dims=cov_input_dims,
+            encoded_dims=encoded_dims,
+            hidden_dim=params.hidden_dim,
+            n_layers=params.n_layers
+        ).to(self.device)
+
+        self.latent_dim = params.latent_dim
+
+        # Total latent dimension across all modalities
+        total_latent_dim = len(self.modality_vaes) * self.latent_dim
+
+        # Prior parameters: mu_p, diag_p, off_diag_p
+        self.mu_p = nn.Parameter(torch.ones(total_latent_dim, device=self.device) * 1e-4)
+
+        self.reduced_diag = params.reduced_diag
+        self.diag_p = nn.Parameter(torch.ones(total_latent_dim, device=self.device))
+
+        self.off_diag_scale = 0.1
+        self.off_diag_p = nn.Parameter(
+            torch.ones(total_latent_dim * (total_latent_dim - 1) // 2, device=self.device) * self.off_diag_scale
         )
 
-        # Learnable prior (simple factorized version)
-        self.register_parameter('mu_p', nn.Parameter(torch.zeros(num_components * latent_dim)))
-        self.register_parameter('logvar_p', nn.Parameter(torch.zeros(num_components * latent_dim)))
+        # Storage for forward pass results
+        self.recons = None
+        self.qz_x = None
+        self.z_x = None
+        self.Sigmaq = None
+        self.muq = None
 
-    def forward(self, x, cond=None):
+    def get_sigma_p(self):
         """
-        Args:
-            x: (B, num_components, 64, 32)
-            cond: (B, cond_dim) or None
-
-        Returns:
-            recons: List of (B, 1, 64, 32) per component
-            mus, logvars: Encoded distributions
+        Compute the prior covariance matrix Sigma_p.
         """
-        B = x.size(0)
-        mus, logvars, cov_embs = [], [], []
-        recons = []
-
-        # Encode each component
-        for i, vae in enumerate(self.component_vaes):
-            encoded = vae.encode(x[:, i:i+1])
-
-            if self.use_resnet:
-                # ComponentVAE_Resnet returns: mu, lambda_z (matrix), cov_emb
-                mu_i, lambda_z_i, cov_emb_i = encoded
-                # Convert lambda_z (diagonal matrix) to logvar (vector)
-                # lambda_z is diagonal, so extract diagonal elements
-                lambda_diag = lambda_z_i.diagonal(dim1=-2, dim2=-1)  # (B, latent_dim)
-                # logvar = log(lambda_diag)
-                logvar_i = torch.log(lambda_diag + 1e-8)
-            else:
-                # ComponentVAE returns: mu, logvar, cov_emb
-                mu_i, logvar_i, cov_emb_i = encoded
-
-            mus.append(mu_i)
-            logvars.append(logvar_i)
-            cov_embs.append(cov_emb_i)
-
-            # Reparameterize and decode
-            std_i = torch.exp(0.5 * logvar_i)
-            eps = torch.randn_like(std_i)
-            z_i = mu_i + eps * std_i
-
-            recon_i = vae.decode(z_i, cond)
-            recons.append(recon_i)
-
-        return recons, mus, logvars
-
-    def loss_function(self, recons, x, mus, logvars,
-                      recon_weights=None, loss_type='mse', alpha_mse=0.5):
-        """
-        ELBO loss with support for multiple reconstruction loss types.
-
-        Supports two modes:
-        1. Simplified factorized KL (default, use_resnet=False)
-        2. ICTAI mode with split_l1_mse (use_resnet=True)
-
-        Args:
-            recons: List of reconstructions
-            x: Input tensor (B, num_components, H, W)
-            mus: List of means
-            logvars: List of logvars
-            recon_weights: Per-component weights (for ICTAI mode)
-            loss_type: 'mse', 'l1', 'l1_mse', 'split_l1_mse', 'bce'
-            alpha_mse: Weight for MSE in l1_mse mode
-
-        Returns:
-            loss, recon_loss, kl_loss
-        """
-        B = x.size(0)
-
-        # Reconstruction loss
-        if recon_weights is not None and loss_type != 'mse':
-            # ICTAI mode: use weighted reconstruction loss
-            data_list = [x[:, i:i+1] for i in range(self.num_components)]
-
-            if loss_type == 'split_l1_mse':
-                # ICTAI original formula
-                mse_term = sum(
-                    w * F.mse_loss(recon, d)
-                    for w, recon, d in zip(recon_weights, recons, data_list)
-                )
-                l1_term = sum(
-                    (1 - w) * F.l1_loss(recon, d)
-                    for w, recon, d in zip(recon_weights, recons, data_list)
-                )
-                recon_loss = mse_term + l1_term
-            elif loss_type == 'l1':
-                recon_loss = sum(
-                    w * F.l1_loss(recon, d)
-                    for w, recon, d in zip(recon_weights, recons, data_list)
-                )
-            elif loss_type == 'l1_mse':
-                recon_loss = sum(
-                    w * (alpha_mse * F.mse_loss(recon, d) + (1 - alpha_mse) * F.l1_loss(recon, d))
-                    for w, recon, d in zip(recon_weights, recons, data_list)
-                )
-            elif loss_type == 'bce':
-                recon_loss = sum(
-                    w * F.binary_cross_entropy_with_logits(recon, d)
-                    for w, recon, d in zip(recon_weights, recons, data_list)
-                )
-            else:
-                # Default MSE with weights
-                recon_loss = sum(
-                    w * F.mse_loss(recon, x[:, i:i+1])
-                    for i, (w, recon) in enumerate(zip(recon_weights, recons))
-                )
+        if self.reduced_diag:
+            diag_elements = self.diag_p
         else:
-            # Simple mode: MSE without weights (backward compatibility)
-            recon_loss = 0
-            for i, recon_i in enumerate(recons):
-                recon_loss += F.mse_loss(recon_i, x[:, i:i+1], reduction='sum')
-            recon_loss = recon_loss / B
+            if self.diagonal_transf == 'relu':
+                diag_elements = F.relu(self.diag_p) + Constants.relu_shift
+            elif self.diagonal_transf == 'softplus':
+                diag_elements = F.softplus(self.diag_p) + 1e-6
+            elif self.diagonal_transf == 'square':
+                diag_elements = torch.square(self.diag_p)
+            elif self.diagonal_transf == 'exp':
+                diag_elements = torch.exp(self.diag_p)
+            elif self.diagonal_transf == 'sig':
+                diag_elements = torch.sigmoid(self.diag_p)
+            else:
+                raise ValueError(f"Invalid diagonal_transf: {self.diagonal_transf}")
 
-        # KL divergence (factorized)
-        kl_loss = 0
-        for i, (mu_i, logvar_i) in enumerate(zip(mus, logvars)):
-            # Prior for component i
-            mu_p_i = self.mu_p[i*self.latent_dim:(i+1)*self.latent_dim]
-            logvar_p_i = self.logvar_p[i*self.latent_dim:(i+1)*self.latent_dim]
+        # Build lower triangular matrix from off_diag_p
+        total_dim = self.mu_p.shape[0]
+        lower_matrix = torch.zeros(total_dim, total_dim, device=self.mu_p.device)
+        tril_indices = torch.tril_indices(row=total_dim, col=total_dim, offset=-1)
+        lower_matrix[tril_indices[0], tril_indices[1]] = self.off_diag_p
 
-            # KL(q||p) for Gaussian
-            kl_i = -0.5 * torch.sum(
-                1 + logvar_i - logvar_p_i - (mu_i - mu_p_i).pow(2) / logvar_p_i.exp() - (logvar_i.exp() / logvar_p_i.exp())
-            )
-            kl_loss += kl_i
+        # Make symmetric
+        symmetric_matrix = lower_matrix + lower_matrix.T
 
-        kl_loss = kl_loss / B
+        # Set diagonal
+        sigma_p = symmetric_matrix.clone()
+        sigma_p.diagonal(dim1=-2, dim2=-1).copy_(diag_elements)
 
-        # Total loss
-        loss = recon_loss + self.beta * kl_loss
+        return sigma_p
 
-        return loss, recon_loss, kl_loss
+    def get_prior(self):
+        """Get the prior distribution p(z)."""
+        mu = self.mu_p
+        Sigma_p = self.get_sigma_p()
+        return MultivariateNormal(mu, covariance_matrix=Sigma_p)
 
-    @torch.no_grad()
-    def sample(self, num_samples, cond=None, device='cuda'):
-        """Sample from prior."""
+    def sample_from_pz(self, n_samples):
+        """Sample from the prior p(z)."""
+        distribution = self.get_prior()
+        samples = distribution.sample((n_samples,))
+        return samples
+
+    def forward(self, x, K=1):
+        """
+        Forward pass through the GMRF MVAE.
+
+        Args:
+            x: List of tensors, one per modality, each of shape (B, 1, 64, 32)
+            K: Number of samples (default: 1)
+        """
+        # 1. Encoding Phase
+        mus, Sigmas, off_diag_embed = [], [], []
+
+        for x_, vae in zip(x, self.modality_vaes):
+            mu, Sigma = vae.enc(x_)
+            mus.append(mu)
+            Sigmas.append(Sigma)
+            cov_embedding = vae.enc.cov_embedding
+            off_diag_embed.append(cov_embedding)
+
+        # Calculate off-diagonal elements for q(z|X)
+        off_diag_z_x = self.off_diag_cov(*off_diag_embed)
+
+        # Concatenate means from all modalities
+        mu_z_x = torch.cat(mus, dim=1)
+
+        # Assemble the full covariance matrix for q(z|X)
+        Sigma_x = assemble_covariance_matrix_corrected(mus, Sigmas, off_diag_z_x, self.encoded_dims)
+
+        mu_z_x = mu_z_x.to(self.device)
+        Sigma_x = Sigma_x.to(self.device)
+
+        self.Sigmaq = Sigma_x
+        self.muq = mu_z_x
+
+        # Define the multivariate normal distribution for q(z|X)
+        self.qz_x = MultivariateNormal(mu_z_x, covariance_matrix=Sigma_x)
+
+        # Sample a latent vector using the reparameterization trick
+        self.z_x = self.qz_x.rsample().to(self.device)
+
+        # 2. Decoding Phase
+        z_splits = torch.split(self.z_x, self.latent_dim, dim=1)
+
+        mus = []
+        for z, vae in zip(z_splits, self.modality_vaes):
+            mu = vae.dec(z)
+            mus.append(mu)
+
+        self.recons = mus
+
+    def decode(self, z):
+        """Decode a latent vector to reconstructions."""
+        z_splits = torch.split(z, self.latent_dim, dim=1)
+        mus = []
+        for z_split, vae in zip(z_splits, self.modality_vaes):
+            mu = vae.dec(z_split)
+            mus.append(mu)
+        self.recons = mus
+        return mus
+
+    def generate(self, num_samples=1):
+        """Generate unconditional samples from p(z)."""
+        z = self.sample_from_pz(num_samples)
+        z_splits = torch.split(z, self.latent_dim, dim=1)
+        mus = []
+        for z_split, vae in zip(z_splits, self.modality_vaes):
+            mus.append(vae.dec(z_split))
+        return mus
+
+    def conditional_generate(self, cond, idx_i, idx_cond, n_sample=1):
+        """
+        Compute conditional mean and covariance for generating X_i given X_j.
+
+        This implements the Gaussian conditional:
+        p(z_i | z_j) = N(mu_cond, Sigma_cond)
+
+        Parameters:
+        - cond: Observed data for the conditioning modality (B, 1, 64, 32)
+        - idx_i: Index of target modality
+        - idx_cond: Index of conditioning modality
+        - n_sample: Number of samples to generate
+        """
+        # Encode conditioning modality
+        m, l = self.modality_vaes[idx_cond].enc(cond)
+        # ICTAI: l is diagonal matrix, used directly as scale_tril
+        dist = MultivariateNormal(m, scale_tril=l)
+        cond_z = dist.sample([n_sample])  # Shape: [n_sample, batch_size, latent_dim]
+
+        if idx_i == idx_cond:
+            return self.modality_vaes[idx_cond].dec(cond_z)
+
+        # Get prior parameters
+        batch_size = cond.shape[0]
+        mu_p_batch = self.mu_p.repeat(batch_size, 1)
+        Sigma = self.get_sigma_p().repeat(batch_size, 1, 1)
+
+        # Indices for slicing
+        start_i, end_i = idx_i * self.latent_dim, (idx_i + 1) * self.latent_dim
+        start_j, end_j = idx_cond * self.latent_dim, (idx_cond + 1) * self.latent_dim
+
+        # Extract relevant blocks
+        mu_i = mu_p_batch[:, start_i:end_i]
+        mu_j = mu_p_batch[:, start_j:end_j]
+
+        Sigma_ii = Sigma[:, start_i:end_i, start_i:end_i]
+        Sigma_jj = Sigma[:, start_j:end_j, start_j:end_j]
+        Sigma_c = Sigma[:, start_i:end_i, start_j:end_j]
+
+        # Invert Sigma_jj
+        Sigma_jj_inv = torch.inverse(Sigma_jj)
+
+        # Compute conditional mean and covariance
+        mu_cond = mu_i + torch.matmul(
+            torch.matmul(Sigma_c, Sigma_jj_inv),
+            (cond_z - mu_j).unsqueeze(-1)
+        ).squeeze(-1).squeeze(0)
+
+        Sigma_cond = Sigma_ii - torch.matmul(torch.matmul(Sigma_c, Sigma_jj_inv), Sigma_c.transpose(-2, -1))
+
+        # Generate samples
         samples = []
-        for i, vae in enumerate(self.component_vaes):
-            mu_p_i = self.mu_p[i*self.latent_dim:(i+1)*self.latent_dim]
-            logvar_p_i = self.logvar_p[i*self.latent_dim:(i+1)*self.latent_dim]
+        for i in range(batch_size):
+            cond_dist = MultivariateNormal(mu_cond[i], covariance_matrix=Sigma_cond[i])
+            sample = cond_dist.sample((n_sample,))
+            samples.append(sample)
 
-            # Sample from prior
-            std_p_i = torch.exp(0.5 * logvar_p_i)
-            z_i = mu_p_i + torch.randn(num_samples, self.latent_dim).to(device) * std_p_i
+        samples = torch.cat(samples, dim=0)
+        conditional_generation = self.modality_vaes[idx_i].dec(samples)
+        return conditional_generation
 
-            # Decode
-            sample_i = vae.decode(z_i, cond)
-            samples.append(sample_i)
-
-        # Stack: (num_samples, num_components, 64, 32)
-        return torch.stack(samples, dim=1)
-
-    @torch.no_grad()
-    def cross_modal_generate(self, observed_comp, source_idx, target_idx, device='cuda'):
+    def self_and_cross_modal_generation(self, data):
         """
-        Simple cross-modal generation (simplified version).
+        Generate cross-modal reconstructions matrix.
 
-        For full Gaussian conditional, see ICTAI implementation.
+        Returns a matrix where entry [i][j] is the reconstruction of modality j
+        given modality i as input.
         """
-        # Encode observed component
-        mu_obs, logvar_obs, _ = self.component_vaes[source_idx].encode(observed_comp.to(device))
+        recons = [[None for _ in range(len(self.modality_vaes))] for _ in range(len(self.modality_vaes))]
+        self.eval()
 
-        # Sample from posterior
-        std_obs = torch.exp(0.5 * logvar_obs)
-        z_obs = mu_obs + torch.randn_like(std_obs) * std_obs
+        with torch.no_grad():
+            for idx_cond in range(len(self.modality_vaes)):
+                for idx_i, vae in enumerate(self.modality_vaes):
+                    recons[idx_cond][idx_i] = self.conditional_generate(
+                        data[idx_cond], idx_i, idx_cond, n_sample=1
+                    )
 
-        # Simple approach: use shared latent assumption
-        # (For full conditional distribution, implement Gaussian conditioning from ICTAI)
-        z_target = z_obs  # Simplified: assume shared structure
+        return recons
 
-        # Decode target component
-        recon_target = self.component_vaes[target_idx].decode(z_target, cond=None)
 
-        return recon_target
+class Epure_GMMVAE(GMRF_MVAE):
+    """
+    GMRF MVAE for EPURE dataset with 5 components.
+
+    Components: group_nc, group_km, bt, fpu, tpc
+    """
+
+    def __init__(self, params):
+        # 5 modality VAEs for EPURE (without 'gi')
+        super().__init__(
+            params,
+            OffDiagonalCov,
+            GMRF_VAE_EPURE, GMRF_VAE_EPURE, GMRF_VAE_EPURE, GMRF_VAE_EPURE, GMRF_VAE_EPURE
+        )
+        self.modelName = 'gmrf_mvae_epure'
+        self.components_name = ['group_nc', 'group_km', 'bt', 'fpu', 'tpc']
+
+        for vae, comp in zip(self.modality_vaes, self.components_name):
+            vae.modelName = comp
+            vae.llik_scaling = 1.0
+
+    def generate_for_calculating_unconditional_coherence(self, N):
+        """Generate samples for coherence calculation."""
+        samples_list = super().generate(N)
+        return [samples.data.cpu() for samples in samples_list]
