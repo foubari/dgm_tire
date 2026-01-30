@@ -38,15 +38,17 @@ import imageio
 
 
 # Dataset-specific component mappings
-# Note: class indices depend on how masks were created
+# Note: class indices depend on how masks were created in preprocessing scripts
 DATASET_COMPONENTS = {
-    # epure: 6 classes (0=background, 1-5=components)
+    # epure: 6 classes (based on create_categorical_masks.py)
+    # bt=0, tpc=1, group_nc=2, fpu=3, group_km=4, background=5
     'epure': {
-        'names': ['group_nc', 'group_km', 'bt', 'fpu', 'tpc'],
-        'to_idx': {'group_nc': 1, 'group_km': 2, 'bt': 3, 'fpu': 4, 'tpc': 5},
-        'background': 0
+        'names': ['bt', 'tpc', 'group_nc', 'fpu', 'group_km'],
+        'to_idx': {'bt': 0, 'tpc': 1, 'group_nc': 2, 'fpu': 3, 'group_km': 4},
+        'background': 5
     },
-    # toy: 4 classes (0-2=components, 3=background)
+    # toy: 4 classes (based on create_reduced_masks.py)
+    # group_nc=0, group_km=1, fpu=2, background=3
     'toy': {
         'names': ['group_nc', 'group_km', 'fpu'],
         'to_idx': {'group_nc': 0, 'group_km': 1, 'fpu': 2},
@@ -182,7 +184,7 @@ def load_model_from_checkpoint(checkpoint_path, config_path=None, device='cuda')
     return model, config, date_str
 
 
-def save_mask(mask, path, scale_for_visualization=True, background_class=5):
+def save_mask(mask, path, scale_for_visualization=True, background_class=None):
     """
     Save segmentation mask as binary image (matches DDPM output format).
 
@@ -191,8 +193,10 @@ def save_mask(mask, path, scale_for_visualization=True, background_class=5):
         path: Output path
         scale_for_visualization: If True, binarize (background=0, foreground=255)
                                  If False, save raw indices
-        background_class: Class index to treat as background (default: 5 for EPURE)
+        background_class: Class index to treat as background (REQUIRED when scale_for_visualization=True)
     """
+    if scale_for_visualization and background_class is None:
+        raise ValueError("background_class must be specified when scale_for_visualization=True")
     mask_np = mask.cpu().numpy() if isinstance(mask, torch.Tensor) else mask
 
     # Ensure 2D shape (H, W)
