@@ -1,18 +1,15 @@
 model:
   type: gmrf_mvae
   num_components: 5
-  latent_dim: 4                # ICTAI alignment: 32 -> 4
-  nf: 32                       # ICTAI alignment: 64 -> 32
-  nf_max: 512                  # Backward compatibility (use_resnet=False)
-  nf_max_e: 512                # Encoder max filters (ResNet mode)
-  nf_max_d: 256                # Decoder max filters (ICTAI: different from encoder!)
-  hidden_dim: 128              # ICTAI alignment: 256 -> 128
-  n_layers: 2
-  beta: 1.0                    # ICTAI alignment: 4.0 -> 1.0
-  diagonal_transf: 'softplus'  # Diagonal transformation for ResNet mode
-  cond_dim: 4
-  dropout_p: 0.0               # ICTAI original: no dropout
-  use_resnet: true             # ICTAI alignment: use ResNet architecture
+  latent_dim: 4                # ICTAI exact: 4
+  nf: 32                       # ICTAI exact: 32
+  nf_max_e: 512                # ICTAI exact: encoder max filters
+  nf_max_d: 256                # ICTAI exact: decoder max filters (different from encoder!)
+  hidden_dim: 128              # ICTAI exact: 128
+  n_layers: 2                  # ICTAI exact: 2
+  beta: 1.0                    # ICTAI exact: 1.0
+  diagonal_transf: 'softplus'  # ICTAI exact: softplus transformation
+  reduced_diag: false          # ICTAI exact: full diagonal
 data:
   root_dir: data/epure
   condition_csv: data/epure/performances.csv
