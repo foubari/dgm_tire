@@ -1,0 +1,57 @@
+model:
+  type: gmrf
+  num_components: 3
+  latent_dim: 4
+  nf: 32
+  nf_max_e: 512
+  nf_max_d: 256
+  hidden_dim: 128
+  n_layers: 2
+  beta: .001
+  diagonal_transf: softplus
+  cond_dim: 4
+  image_size: [64, 32]
+  reduced_diag: false
+data:
+  root_dir: data/toy_epure
+  condition_csv: data/toy_epure/performances_1000.csv
+  component_dirs:
+  - group_nc
+  - group_km
+  - fpu
+  condition_columns:
+  - d_cons_norm
+  - d_rigid_norm
+  - d_life_norm
+  - d_stab_norm
+  prefix_column: matching
+  filename_pattern: '{prefix}_{component}.png'
+  split_column: train
+  normalized: true
+training:
+  epochs: 100
+  batch_size: 32
+  num_workers: 0
+  lr: 0.0005
+  optimizer: adam
+  amsgrad: false
+  recon_loss: split_l1_mse
+  alpha_mse: 0.5
+  recon_weights: [1., 1, 1.0]
+  eval_every: 10
+  check_every: 25
+  seed: 42
+  device: cuda
+paths:
+  output_dir: outputs/gmrf_toy/
+  samples_dir: samples/gmrf_toy/
+sampling:
+  unconditional:
+    n_samples: 1000
+    batch_size: 64
+  conditional:
+    components:
+    - group_nc
+    - fpu
+    batch_size: 64
+  num_samples: 1000

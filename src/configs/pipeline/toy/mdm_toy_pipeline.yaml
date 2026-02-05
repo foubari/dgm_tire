@@ -18,10 +18,10 @@ data:
   root_dir: data/toy_epure/
   condition_csv: data/toy_epure/performances_1000.csv
   condition_columns:
-  - d_cons
-  - d_rigid
-  - d_life
-  - d_stab
+  - d_cons_norm
+  - d_rigid_norm
+  - d_life_norm
+  - d_stab_norm
   prefix_column: matching
   split_column: train
   resolution:
@@ -30,9 +30,9 @@ data:
   mask_format: numpy
   mask_path: null
   filename_pattern: '{prefix}.png'
-  normalized: false
+  normalized: true
 training:
-  epochs: 500
+  epochs: 100
   batch_size: 64
   num_workers: 4
   lr: 0.00008

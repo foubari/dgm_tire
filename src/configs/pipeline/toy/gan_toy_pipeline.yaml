@@ -1,5 +1,5 @@
 model:
-  type: wgan_gp
+  type: gan
   channels: null
   image_size:
   - 64
@@ -10,8 +10,8 @@ model:
   - 1
   - 2
   - 4
-  lambda_gp: 10
-  n_critic: 5
+  label_smoothing: 0.1
+  use_spectral_norm: true
   cond_drop_prob: 0.1
   cond_dim: null
 data:
@@ -34,10 +34,10 @@ training:
   epochs: 100
   batch_size: 64
   num_workers: 4
-  lr_generator: 0.0001
-  lr_critic: 0.0001
-  beta1: 0.0
-  beta2: 0.9
+  lr_generator: 0.0002
+  lr_discriminator: 0.0002
+  beta1: 0.5
+  beta2: 0.999
   optimizer: adam
   ema_decay: 0.9999
   ema_update_every: 10
@@ -45,8 +45,8 @@ training:
   check_every: 25
   seed: 0
 paths:
-  output_dir: outputs/wgan_gp_toy/
-  samples_dir: samples/wgan_gp_toy/
+  output_dir: outputs/gan_toy/
+  samples_dir: samples/gan_toy/
 sampling:
   num_samples: 1000
   batch_sz: 8

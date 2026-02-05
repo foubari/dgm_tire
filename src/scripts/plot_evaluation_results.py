@@ -42,9 +42,10 @@ MODELS = [
     'mdm',
     'vae',
     'meta_vae',
-    'gmrf_mvae',
+    'gmrf',
     'mmvaeplus',
     'wgan_gp',
+    'gan',
 ]
 
 # Display names for models
@@ -54,9 +55,10 @@ MODEL_DISPLAY_NAMES = {
     'mdm': 'MDM',
     'vae': 'VAE',
     'meta_vae': 'Meta-VAE',
-    'gmrf_mvae': 'GMRF-MVAE',
+    'gmrf': 'GMRF-MVAE',
     'mmvaeplus': 'MMVAE+',
     'wgan_gp': 'WGAN-GP',
+    'gan': 'GAN',
 }
 
 # Colors for each model (colorblind-friendly palette)
@@ -66,9 +68,10 @@ MODEL_COLORS = {
     'mdm': '#2ca02c',         # Green
     'vae': '#d62728',         # Red
     'meta_vae': '#9467bd',    # Purple
-    'gmrf_mvae': '#8c564b',   # Brown
+    'gmrf': '#8c564b',        # Brown
     'mmvaeplus': '#e377c2',   # Pink
     'wgan_gp': '#7f7f7f',     # Gray
+    'gan': '#bcbd22',         # Olive
 }
 
 # Markers for each model
@@ -78,9 +81,10 @@ MODEL_MARKERS = {
     'mdm': '^',           # Triangle up
     'vae': 'D',           # Diamond
     'meta_vae': 'v',      # Triangle down
-    'gmrf_mvae': 'p',     # Pentagon
+    'gmrf': 'p',          # Pentagon
     'mmvaeplus': 'h',     # Hexagon
     'wgan_gp': '*',       # Star
+    'gan': 'X',           # X marker
 }
 
 # Marker size
@@ -94,6 +98,18 @@ def load_all_runs_json(results_dir: Path, model: str, mode: str) -> Optional[Lis
     """Load the aggregated all_runs JSON file for a model and mode."""
     filename = f"{model}_{mode}_all_runs.json"
     filepath = results_dir / filename
+
+    # Fallback: if gmrf not found, try gmrf_mvae (backward compatibility with old toy results)
+    if not filepath.exists() and model == 'gmrf':
+        filename = f"gmrf_mvae_{mode}_all_runs.json"
+        filepath = results_dir / filename
+
+    # Fallback: for old toy results without mode separation, try loading the generic file
+    if not filepath.exists():
+        filename_generic = f"{model}_all_runs.json"
+        filepath_generic = results_dir / filename_generic
+        if filepath_generic.exists():
+            filepath = filepath_generic
 
     if not filepath.exists():
         return None
@@ -139,6 +155,14 @@ def extract_rce(run_data: Dict) -> Optional[Tuple[float, float]]:
     if real_wd is not None and gen_wd is not None:
         return (real_wd, gen_wd)
     return None
+
+
+def extract_rce_gen_wd(run_data: Dict) -> Optional[float]:
+    """Extract RCE gen_wd (W1 distance to Dirac delta_1) from a run's metrics."""
+    metrics = run_data.get('metrics', {})
+    rce = metrics.get('rce', {})
+    gen_wd = rce.get('gen_wd')
+    return gen_wd
 
 
 def extract_iou_overall(run_data: Dict) -> Optional[float]:
@@ -254,6 +278,24 @@ def extract_inpainting_dice_avg(run_data: Dict) -> Optional[float]:
 
     if all_dice_values:
         return np.mean(all_dice_values)
+    return None
+
+
+def extract_inpainting_rce_avg(run_data: Dict) -> Optional[float]:
+    """Extract average RCE gen_wd across all preserved components for inpainting."""
+    components = run_data.get('components', {})
+    if not components:
+        return None
+
+    rce_values = []
+    for comp_name, comp_data in components.items():
+        rce = comp_data.get('rce', {})
+        gen_wd = rce.get('gen_wd')
+        if gen_wd is not None:
+            rce_values.append(gen_wd)
+
+    if rce_values:
+        return np.mean(rce_values)
     return None
 
 
@@ -412,6 +454,7 @@ def plot_all_metrics(
             ('COM', 'COM Wasserstein Distance', extract_com_overall, True, False),
             ('IoU_WD', 'IoU Wasserstein Distance (avg)', extract_iou_overall, True, False),
             ('Dice_WD', 'Dice Wasserstein Distance (avg)', extract_dice_overall, True, False),
+            ('RCE', 'RCE (W₁ to δ₁)', extract_rce_gen_wd, True, False),
         ]
     else:  # inpainting
         metrics = [
@@ -419,6 +462,7 @@ def plot_all_metrics(
             ('COM', 'COM Wasserstein Distance (avg)', extract_inpainting_com_avg, True, False),
             ('IoU_WD', 'IoU Wasserstein Distance (avg)', extract_inpainting_iou_avg, True, False),
             ('Dice_WD', 'Dice Wasserstein Distance (avg)', extract_inpainting_dice_avg, True, False),
+            ('RCE', 'RCE (W₁ to δ₁) (avg)', extract_inpainting_rce_avg, True, False),
         ]
 
     # Plot each metric
@@ -457,6 +501,7 @@ def create_summary_table(
             ('COM', extract_com_overall),
             ('IoU_WD', extract_iou_overall),
             ('Dice_WD', extract_dice_overall),
+            ('RCE', extract_rce_gen_wd),
         ]
     else:
         metrics = [
@@ -464,6 +509,7 @@ def create_summary_table(
             ('COM', extract_inpainting_com_avg),
             ('IoU_WD', extract_inpainting_iou_avg),
             ('Dice_WD', extract_inpainting_dice_avg),
+            ('RCE', extract_inpainting_rce_avg),
         ]
 
     # Collect data

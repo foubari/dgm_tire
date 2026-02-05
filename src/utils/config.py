@@ -77,7 +77,7 @@ def auto_complete_config(config: Dict[str, Any]) -> Dict[str, Any]:
     model_type = model_cfg.get('type', 'ddpm')
     
     # Auto-calculate channels from component_dirs (DDPM, Flow Matching, VQ-VAE, and WGAN-GP, not MDM)
-    if 'model' in config and model_type in ['ddpm', 'flow_matching', 'vqvae', 'wgan_gp']:
+    if 'model' in config and model_type in ['ddpm', 'flow_matching', 'vqvae', 'wgan_gp', 'gan']:
         if 'channels' not in model_cfg or model_cfg['channels'] is None:
             component_dirs = data_cfg.get('component_dirs', [])
             if component_dirs:
@@ -88,8 +88,8 @@ def auto_complete_config(config: Dict[str, Any]) -> Dict[str, Any]:
                     "Cannot auto-calculate model.channels: data.component_dirs not specified"
                 )
     
-    # Auto-calculate total_latent_dim for WGAN-GP
-    if 'model' in config and model_type == 'wgan_gp':
+    # Auto-calculate total_latent_dim for WGAN-GP and GAN
+    if 'model' in config and model_type in ['wgan_gp', 'gan']:
         if 'total_latent_dim' not in model_cfg or model_cfg['total_latent_dim'] is None:
             channels = model_cfg.get('channels')
             latent_dim_per_component = model_cfg.get('latent_dim_per_component', 4)
@@ -157,6 +157,10 @@ def validate_config(config: Dict[str, Any], model_type: Optional[str] = None) ->
                 f"model.latent_dim_u ({model_cfg.get('latent_dim_u')}) must equal "
                 f"latent_dim_w ({model_cfg.get('latent_dim_w')}) + latent_dim_z ({model_cfg.get('latent_dim_z')})"
             )
+    elif model_type in ['vae', 'meta_vae', 'gmrf_mvae', 'gmrf', 'vqvae', 'wgan_gp', 'gan']:
+        # VAE-based models don't use dim/dim_mults parameters
+        # They use their own architecture parameters (latent_dim, nf, etc.)
+        pass
     else:
         # Common parameters for diffusion models
         required_model_params = ['image_size', 'dim', 'dim_mults']
@@ -258,6 +262,23 @@ def validate_config(config: Dict[str, Any], model_type: Optional[str] = None) ->
         if 'n_critic' not in model_cfg:
             raise ValueError("WGAN-GP requires model.n_critic")
     
+    elif model_type == 'gan':
+        # Standard GAN requires component_dirs
+        if 'component_dirs' not in data_cfg:
+            raise ValueError("GAN requires data.component_dirs")
+
+        # Validate channels matches component_dirs length (only if channels is set, None is OK for auto-completion)
+        if 'channels' in model_cfg and model_cfg['channels'] is not None and 'component_dirs' in data_cfg:
+            if model_cfg['channels'] != len(data_cfg['component_dirs']):
+                raise ValueError(
+                    f"model.channels ({model_cfg['channels']}) does not match "
+                    f"len(data.component_dirs) ({len(data_cfg['component_dirs'])})"
+                )
+
+        # Validate GAN-specific parameters
+        if 'latent_dim_per_component' not in model_cfg:
+            raise ValueError("GAN requires model.latent_dim_per_component")
+
     elif model_type == 'mdm':
         # MDM requires condition_columns (but not component_dirs)
         if 'condition_columns' not in data_cfg:
@@ -271,13 +292,25 @@ def validate_config(config: Dict[str, Any], model_type: Optional[str] = None) ->
         # MMVAE+ requires component_dirs
         if 'component_dirs' not in data_cfg:
             raise ValueError("MMVAE+ requires data.component_dirs")
-        
-        # Validate component count (should be 5)
-        if len(data_cfg['component_dirs']) != 5:
+
+        # Validate component count (should be 3 for toy or 5 for epure)
+        num_components = len(data_cfg['component_dirs'])
+        if num_components not in [3, 5]:
             raise ValueError(
-                f"MMVAE+ requires exactly 5 components, got {len(data_cfg['component_dirs'])}"
+                f"MMVAE+ requires 3 (toy) or 5 (epure) components, got {num_components}"
             )
-    
+
+    elif model_type == 'gmrf':
+        # GMRF requires component_dirs
+        if 'component_dirs' not in data_cfg:
+            raise ValueError("GMRF requires data.component_dirs")
+
+        # Validate GMRF specific parameters
+        required_gmrf_params = ['latent_dim', 'hidden_dim', 'n_layers', 'nf']
+        for param in required_gmrf_params:
+            if param not in model_cfg:
+                raise ValueError(f"Missing required model parameter: {param} (required for GMRF)")
+
     # Validate condition_columns if present
     if 'condition_columns' in data_cfg:
         if not isinstance(data_cfg['condition_columns'], list):
@@ -318,6 +351,12 @@ def validate_config(config: Dict[str, Any], model_type: Optional[str] = None) ->
             raise ValueError("Missing required training parameter: lr_generator (required for WGAN-GP)")
         if 'lr_critic' not in training_cfg:
             raise ValueError("Missing required training parameter: lr_critic (required for WGAN-GP)")
+    elif model_type == 'gan':
+        # Standard GAN uses lr_generator and lr_discriminator
+        if 'lr_generator' not in training_cfg:
+            raise ValueError("Missing required training parameter: lr_generator (required for GAN)")
+        if 'lr_discriminator' not in training_cfg:
+            raise ValueError("Missing required training parameter: lr_discriminator (required for GAN)")
     elif model_type == 'mmvaeplus':
         # MMVAE+ uses lr
         if 'lr' not in training_cfg:
@@ -328,6 +367,17 @@ def validate_config(config: Dict[str, Any], model_type: Optional[str] = None) ->
             if training_cfg['objective'] not in valid_objectives:
                 raise ValueError(
                     f"training.objective must be one of {valid_objectives}, got {training_cfg['objective']}"
+                )
+    elif model_type == 'gmrf':
+        # GMRF uses lr
+        if 'lr' not in training_cfg:
+            raise ValueError("Missing required training parameter: lr (required for GMRF)")
+        # Validate recon_loss if present
+        if 'recon_loss' in training_cfg:
+            valid_losses = ['mse', 'l1', 'l1_mse', 'split_l1_mse', 'bce']
+            if training_cfg['recon_loss'] not in valid_losses:
+                raise ValueError(
+                    f"training.recon_loss must be one of {valid_losses}, got {training_cfg['recon_loss']}"
                 )
     else:
         # Other models use lr

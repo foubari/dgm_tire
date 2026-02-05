@@ -390,12 +390,28 @@ def main():
     if checkpoint_path.is_dir():
         # If directory provided, assume it's the run directory
         run_dir = checkpoint_path
-        # Look for checkpoint_best.pt in check subdirectory
-        checkpoint_file = run_dir / 'check' / 'checkpoint_best.pt'
-        if not checkpoint_file.exists():
-            print(f"ERROR: Checkpoint not found at {checkpoint_file}")
+        check_dir = run_dir / 'check'
+        if not check_dir.exists():
+            print(f"ERROR: Checkpoint directory not found at {check_dir}")
             return
-        checkpoint_path = checkpoint_file
+        # Find checkpoint with highest epoch number
+        checkpoints = list(check_dir.glob('checkpoint_*.pt'))
+        if checkpoints:
+            def get_epoch(p):
+                try:
+                    return int(p.stem.split('_')[1])
+                except (ValueError, IndexError):
+                    return -1
+            numbered = [cp for cp in checkpoints if get_epoch(cp) >= 0]
+            if numbered:
+                checkpoint_path = max(numbered, key=get_epoch)
+            elif any(cp.stem == 'checkpoint_best' for cp in checkpoints):
+                checkpoint_path = check_dir / 'checkpoint_best.pt'
+            else:
+                checkpoint_path = checkpoints[0]  # Fallback
+        else:
+            print(f"ERROR: No checkpoints found in {check_dir}")
+            return
     else:
         # If .pt file provided, get run directory
         run_dir = checkpoint_path.parent.parent

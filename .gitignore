@@ -54,6 +54,10 @@ src/PLAN_VAE_IMPLEMENTATIONS.md
 src/WGAN_GP_IMPLEMENTATION_PLAN.md
 scripts/README_PERFORMANCES.md
 
+# Old/deprecated model implementations
+src/models/gmrf_mvae_old/
+src/models/meta_vae_wrong/
+
 # Unused configs (keep only pipeline configs)
 src/configs/*_default.yaml
 src/configs/*_quick_test.yaml

@@ -31,13 +31,13 @@ class Colors:
 # All available models - VQVAE and WGAN-GP at the end
 ALL_MODELS = [
     'ddpm', 'mdm', 'flow_matching',
-    'vae', 'gmrf_mvae', 'meta_vae',
+    'vae', 'gmrf_mvae', 'gmrf', 'meta_vae',
     'mmvaeplus',
-    'vqvae', 'wgan_gp'  # Heavy models at the end
+    'vqvae', 'wgan_gp', 'gan'  # Heavy models at the end
 ]
 
 # Models that don't support inpainting
-NO_INPAINTING_MODELS = ['wgan_gp']
+NO_INPAINTING_MODELS = ['wgan_gp', 'gan']
 
 # Dataset components for CONDITIONAL and INPAINTING sampling
 # Only group_nc, group_km, fpu (NOT bt, tpc)
@@ -259,10 +259,10 @@ class Pipeline:
         if not output_base.exists():
             return []
 
-        # Find all timestamped directories (format: YYYY-MM-DD_HH-MM-SS)
+        # Find all timestamped directories (format: YYYY-MM-DD_HH-MM-SS or YYYY-MM-DD_HH-MM)
         runs = sorted([
             d for d in output_base.iterdir()
-            if d.is_dir() and d.name.startswith("20") and len(d.name) == 19
+            if d.is_dir() and d.name.startswith("20") and len(d.name) in [16, 19]
         ])
 
         return runs

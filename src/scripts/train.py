@@ -39,8 +39,10 @@ def get_model_script(model_type):
         'flow_matching': 'models/flow_matching/train.py',
         'vqvae': 'models/vqvae/train.py',
         'wgan_gp': 'models/wgan_gp/train.py',
+        'gan': 'models/gan/train.py',
         'mmvaeplus': 'models/mmvaeplus/train.py',
         'gmrf_mvae': 'models/gmrf_mvae/train.py',
+        'gmrf': 'models/gmrf/train.py',
         'meta_vae': 'models/meta_vae/train.py',
         'vae': 'models/vae/train.py',
     }
@@ -65,7 +67,7 @@ def main():
     )
     
     parser.add_argument('--model', type=str, required=True,
-                       choices=['ddpm', 'mdm', 'multinomial', 'flow_matching', 'vqvae', 'wgan_gp', 'mmvaeplus', 'gmrf_mvae','meta_vae', 'vae'],
+                       choices=['ddpm', 'mdm', 'multinomial', 'flow_matching', 'vqvae', 'wgan_gp', 'gan', 'mmvaeplus', 'gmrf_mvae', 'gmrf', 'meta_vae', 'vae'],
                        help='Model type to train')
     parser.add_argument('--config', type=str, required=True,
                        help='Path to YAML configuration file')

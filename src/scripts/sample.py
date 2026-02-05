@@ -36,6 +36,7 @@ def get_model_script(model_type):
         'flow_matching': 'models/flow_matching/sample.py',
         'vqvae': 'models/vqvae/sample.py',
         'wgan_gp': 'models/wgan_gp/sample.py',
+        'gan': 'models/gan/sample.py',
         'mmvaeplus': 'models/mmvaeplus/sample.py',
         'gmrf_mvae': 'models/gmrf_mvae/sample.py',
         'meta_vae': 'models/meta_vae/sample.py',
@@ -63,7 +64,7 @@ def main():
     )
     
     parser.add_argument('--model', type=str, required=True,
-                       choices=['ddpm', 'mdm', 'multinomial', 'flow_matching', 'vqvae', 'wgan_gp', 'mmvaeplus', 'gmrf_mvae','meta_vae', 'vae'],
+                       choices=['ddpm', 'mdm', 'multinomial', 'flow_matching', 'vqvae', 'wgan_gp', 'gan', 'mmvaeplus', 'gmrf_mvae', 'meta_vae', 'vae'],
                        help='Model type to sample from')
     parser.add_argument('--checkpoint', type=str, required=True,
                        help='Path to checkpoint file')

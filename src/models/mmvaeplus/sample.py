@@ -32,7 +32,7 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from datasets.continuous import MultiComponentDataset
-from models.mmvaeplus import MMVAEplusEpure
+from models.mmvaeplus import MMVAEplusEpure, MMVAEplusToy
 from models.mmvaeplus.utils import unpack_data, get_mean
 from utils.config import load_config, auto_complete_config, validate_config, resolve_path
 from utils.io import save_component_images
@@ -57,14 +57,25 @@ def load_model_from_checkpoint(checkpoint_path, config_path=None, device='cuda')
         device_obj = device
     
     checkpoint_path = Path(checkpoint_path)
-    
+
     # Handle directory vs file
     if checkpoint_path.is_dir():
         check_dir = checkpoint_path / 'check'
         if check_dir.exists():
             checkpoints = list(check_dir.glob('checkpoint_*.pt'))
             if checkpoints:
-                checkpoint_path = max(checkpoints, key=lambda p: int(p.stem.split('_')[1]))
+                # Find checkpoint with highest epoch number
+                def get_epoch(p):
+                    try:
+                        return int(p.stem.split('_')[1])
+                    except (ValueError, IndexError):
+                        return -1
+                # Filter to numbered checkpoints only
+                numbered = [cp for cp in checkpoints if get_epoch(cp) >= 0]
+                if numbered:
+                    checkpoint_path = max(numbered, key=get_epoch)
+                else:
+                    checkpoint_path = checkpoints[0]  # Fallback
             else:
                 raise FileNotFoundError(f"No checkpoint found in {check_dir}")
         else:
@@ -105,14 +116,20 @@ def load_model_from_checkpoint(checkpoint_path, config_path=None, device='cuda')
     else:
         Params = params_dict
     
-    # Create model
-    model = MMVAEplusEpure(Params()).to(device_obj)
+    # Select model class based on number of components
+    num_components = len(config['data']['component_dirs'])
+    if num_components == 3:
+        model = MMVAEplusToy(Params()).to(device_obj)
+    elif num_components == 5:
+        model = MMVAEplusEpure(Params()).to(device_obj)
+    else:
+        raise ValueError(f"Unsupported number of components: {num_components}. Expected 3 (toy) or 5 (epure).")
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
     
     print(f"Model loaded from {checkpoint_path}")
     print(f"  Date: {date_str}")
-    print(f"  Components: {len(model.vaes)}")
+    print(f"  Components: {len(model.vaes)} (detected: {num_components})")
     print(f"  Cond dim: {Params.cond_dim}")
     
     return model, config, date_str

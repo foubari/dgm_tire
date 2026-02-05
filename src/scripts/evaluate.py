@@ -47,7 +47,7 @@ from evaluation.evaluator import ModelEvaluator
 
 
 def find_all_runs(model_name: str, dataset_name: str) -> list:
-    """Trouve tous les runs pour un modèle/dataset."""
+    """Trouve tous les runs pour un modèle/dataset (basé sur outputs/)."""
     if dataset_name == "toy":
         base_dir = Path("outputs") / f"{model_name}_toy"
     else:
@@ -61,6 +61,48 @@ def find_all_runs(model_name: str, dataset_name: str) -> list:
         d for d in base_dir.iterdir()
         if d.is_dir() and d.name not in ['check', 'samples', 'logs', 'fid_cache']
     ]
+    return sorted(runs)
+
+
+def find_all_samples_runs(model_name: str, dataset_name: str, mode: str = "conditional") -> list:
+    """Trouve tous les runs disponibles à partir du dossier samples/.
+    
+    Cette fonction est la source de vérité pour les runs à évaluer,
+    car l'évaluation se base sur les samples générés, pas les checkpoints.
+    
+    Args:
+        model_name: Nom du modèle
+        dataset_name: 'epure' ou 'toy'
+        mode: 'conditional' ou 'inpainting'
+    
+    Returns:
+        Liste de noms de runs (timestamps) trouvés dans samples/
+    """
+    if dataset_name == "toy":
+        samples_base = Path("samples") / f"{model_name}_toy"
+    else:
+        samples_base = Path("samples") / model_name
+    
+    samples_dir = samples_base / mode
+    
+    if not samples_dir.exists():
+        return []
+    
+    # Chercher les dossiers de runs (timestamps)
+    runs = []
+    for d in samples_dir.iterdir():
+        if d.is_dir():
+            # Vérifier que c'est un run valide avec des samples
+            if mode == "conditional":
+                # Pour conditional, vérifier que 'full' existe
+                if (d / "full").exists():
+                    runs.append(d.name)
+            else:  # inpainting
+                # Pour inpainting, vérifier qu'il y a des sous-dossiers avec 'full'
+                subdirs = [sd for sd in d.iterdir() if sd.is_dir()]
+                if subdirs and any((sd / "full").exists() for sd in subdirs):
+                    runs.append(d.name)
+    
     return sorted(runs)
 
 
@@ -121,7 +163,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Evaluate EpureDGM models")
 
     parser.add_argument('--model', required=True,
-                       choices=['ddpm', 'mdm', 'flow_matching', 'vqvae', 'wgan_gp', 'mmvaeplus', 'vae', 'gmrf_mvae', 'meta_vae'],
+                       choices=['ddpm', 'mdm', 'flow_matching', 'vqvae', 'wgan_gp', 'gan', 'mmvaeplus', 'vae', 'gmrf_mvae', 'gmrf', 'meta_vae'],
                        help='Model type')
     parser.add_argument('--dataset', required=True,
                        choices=['epure', 'toy'],
@@ -150,36 +192,41 @@ def parse_args():
 
 
 def find_checkpoint_in_dir(run_dir: Path) -> Optional[Path]:
-    """Find best checkpoint in run directory with priority order.
+    """Find the latest checkpoint in run directory.
 
     Priority:
-    1. checkpoint_100.pt (final epoch)
-    2. checkpoint_best.pt (if exists)
-    3. Latest checkpoint_{N}.pt
+    1. Latest checkpoint_{N}.pt (highest epoch number)
+    2. checkpoint_best.pt (fallback if no numbered checkpoints)
     """
     check_dir = run_dir / "check"
     if not check_dir.exists():
         return None
 
-    # Priority 1: checkpoint_100.pt
-    checkpoint_100 = check_dir / "checkpoint_100.pt"
-    if checkpoint_100.exists():
-        return checkpoint_100
+    def extract_epoch(path):
+        """Extract epoch number from checkpoint filename."""
+        try:
+            # Handle checkpoint_{epoch}.pt format
+            name = path.stem
+            if name.startswith('checkpoint_') and name != 'checkpoint_best':
+                return int(name.split('_')[1])
+            return -1  # Non-numbered checkpoints get lowest priority
+        except (ValueError, IndexError):
+            return -1
 
-    # Priority 2: checkpoint_best.pt
+    # Find all checkpoint files
+    checkpoints = list(check_dir.glob("checkpoint_*.pt"))
+
+    # Filter to only numbered checkpoints (exclude checkpoint_best.pt)
+    numbered_checkpoints = [cp for cp in checkpoints if extract_epoch(cp) >= 0]
+
+    if numbered_checkpoints:
+        # Return the checkpoint with highest epoch number
+        return max(numbered_checkpoints, key=extract_epoch)
+
+    # Fallback: checkpoint_best.pt
     checkpoint_best = check_dir / "checkpoint_best.pt"
     if checkpoint_best.exists():
         return checkpoint_best
-
-    # Priority 3: Latest checkpoint
-    checkpoints = list(check_dir.glob("checkpoint_*.pt"))
-    if checkpoints:
-        def extract_epoch(path):
-            try:
-                return int(path.stem.split('_')[1])
-            except:
-                return 0
-        return max(checkpoints, key=extract_epoch)
 
     return None
 
@@ -189,7 +236,7 @@ def evaluate_mode(args, runs_to_evaluate: list, mode: str) -> list:
 
     Args:
         args: Parsed arguments
-        runs_to_evaluate: List of run directories
+        runs_to_evaluate: List of run names (strings) or run directories (Paths)
         mode: 'conditional' or 'inpainting'
 
     Returns:
@@ -201,24 +248,34 @@ def evaluate_mode(args, runs_to_evaluate: list, mode: str) -> list:
     print(f"# Evaluating {mode.upper()} mode")
     print(f"{'#'*70}")
 
-    for run_dir in runs_to_evaluate:
-        # Verify checkpoint exists
-        checkpoint_file = find_checkpoint_in_dir(run_dir)
-        if not checkpoint_file or not checkpoint_file.exists():
-            print(f"\nWARNING: No valid checkpoint found for {run_dir.name}, skipping...")
-            continue
+    for run_item in runs_to_evaluate:
+        # Support both Path objects and string run names
+        if isinstance(run_item, Path):
+            run_name = run_item.name
+            run_dir = run_item
+        else:
+            run_name = run_item
+            # Construct run_dir path (may not exist if checkpoint was deleted)
+            if args.dataset == "toy":
+                run_dir = Path("outputs") / f"{args.model}_toy" / run_name
+            else:
+                run_dir = Path("outputs") / args.model / run_name
 
-        # Find samples directory for this mode
-        samples_dir = find_samples_dir(args.model, args.dataset, run_dir.name, mode)
+        # Find samples directory for this mode (THIS IS THE SOURCE OF TRUTH)
+        samples_dir = find_samples_dir(args.model, args.dataset, run_name, mode)
 
         if not samples_dir.exists():
-            print(f"\nWARNING: {mode.capitalize()} samples not found for {run_dir.name}, skipping...")
+            print(f"\nWARNING: {mode.capitalize()} samples not found for {run_name}, skipping...")
             print(f"  Expected at: {samples_dir}")
             continue
 
+        # Checkpoint is OPTIONAL - only used for counting parameters
+        checkpoint_file = find_checkpoint_in_dir(run_dir) if run_dir.exists() else None
+        checkpoint_info = checkpoint_file.name if checkpoint_file else "N/A (samples-only evaluation)"
+
         # Extract seed from run directory name
         seed = None
-        for part in run_dir.name.split('_'):
+        for part in run_name.split('_'):
             if 'seed' in part:
                 try:
                     seed = int(part.replace('seed', ''))
@@ -228,8 +285,8 @@ def evaluate_mode(args, runs_to_evaluate: list, mode: str) -> list:
         if mode == "conditional":
             # Standard conditional evaluation
             print(f"\n{'='*70}")
-            print(f"Evaluating run: {run_dir.name} (conditional)")
-            print(f"  Checkpoint: {checkpoint_file.name}")
+            print(f"Evaluating run: {run_name} (conditional)")
+            print(f"  Checkpoint: {checkpoint_info}")
             print(f"  Samples: {samples_dir}")
             print(f"{'='*70}")
 
@@ -252,7 +309,7 @@ def evaluate_mode(args, runs_to_evaluate: list, mode: str) -> list:
                 all_results.append(results)
 
                 # Save individual results
-                output_file = Path(args.output_dir) / args.dataset / args.model / "conditional" / f"{run_dir.name}.json"
+                output_file = Path(args.output_dir) / args.dataset / args.model / "conditional" / f"{run_name}.json"
                 evaluator.save_results(results, output_file)
 
             except Exception as e:
@@ -269,8 +326,8 @@ def evaluate_mode(args, runs_to_evaluate: list, mode: str) -> list:
                 continue
 
             print(f"\n{'='*70}")
-            print(f"Evaluating run: {run_dir.name} (inpainting)")
-            print(f"  Checkpoint: {checkpoint_file.name}")
+            print(f"Evaluating run: {run_name} (inpainting)")
+            print(f"  Checkpoint: {checkpoint_info}")
             print(f"  Samples: {samples_dir}")
             print(f"  Preserved components: {preserved_components}")
             print(f"{'='*70}")
@@ -317,7 +374,7 @@ def evaluate_mode(args, runs_to_evaluate: list, mode: str) -> list:
             all_results.append(run_results)
 
             # Save individual results
-            output_file = Path(args.output_dir) / args.dataset / args.model / "inpainting" / f"{run_dir.name}.json"
+            output_file = Path(args.output_dir) / args.dataset / args.model / "inpainting" / f"{run_name}.json"
             output_file.parent.mkdir(parents=True, exist_ok=True)
             with open(output_file, 'w') as f:
                 json.dump(run_results, f, indent=2, default=lambda x: float(x) if isinstance(x, np.floating) else x)
@@ -433,13 +490,32 @@ def print_summary(all_results: list, mode: str):
 def main():
     args = parse_args()
 
+    # Determine modes to evaluate
+    if args.mode == 'all':
+        modes = ['conditional', 'inpainting']
+    else:
+        modes = [args.mode]
+
     # Determine which runs to evaluate
     runs_to_evaluate = []
 
     if args.run:
-        runs_to_evaluate = [Path(args.run)]
+        # Single run specified - can be a path or just a run name
+        run_path = Path(args.run)
+        if run_path.exists():
+            runs_to_evaluate = [run_path.name]  # Extract just the run name
+        else:
+            # Assume it's just a run name (e.g., "2026-02-04_21-41-26")
+            runs_to_evaluate = [args.run]
     elif args.all_runs:
-        runs_to_evaluate = find_all_runs(args.model, args.dataset)
+        # Find all runs based on SAMPLES (source of truth for evaluation)
+        # Use the first mode to discover runs, they should be the same
+        runs_to_evaluate = find_all_samples_runs(args.model, args.dataset, modes[0])
+        
+        # If no samples found, fall back to outputs/ for backward compatibility
+        if not runs_to_evaluate:
+            print(f"[INFO] No samples found in samples/, falling back to outputs/")
+            runs_to_evaluate = [r.name for r in find_all_runs(args.model, args.dataset)]
     elif args.seeds:
         seeds = [int(s) for s in args.seeds.split(',')]
 
@@ -449,10 +525,11 @@ def main():
         if base_dir.exists():
             seed_folders = [base_dir / f"run_seed{s}" for s in seeds]
             if all(f.exists() for f in seed_folders):
-                runs_to_evaluate = seed_folders
+                runs_to_evaluate = [f.name for f in seed_folders]
             else:
-                all_runs = find_all_runs(args.model, args.dataset)
-                all_runs = sorted(all_runs, key=lambda d: d.stat().st_mtime)
+                all_runs = find_all_samples_runs(args.model, args.dataset, modes[0])
+                if not all_runs:
+                    all_runs = [r.name for r in find_all_runs(args.model, args.dataset)]
                 runs_to_evaluate = all_runs[:len(seeds)]
         else:
             print(f"ERROR: Output directory not found: {base_dir}")
@@ -463,16 +540,12 @@ def main():
 
     if not runs_to_evaluate:
         print(f"ERROR: No runs found for {args.model} on {args.dataset}")
+        print(f"  Searched in: samples/{args.model}/{modes[0]}/")
         sys.exit(1)
 
-    print(f"\n[Found {len(runs_to_evaluate)} run(s) to evaluate]")
+    print(f"\\n[Found {len(runs_to_evaluate)} run(s) to evaluate]")
+    print(f"[Runs: {', '.join(runs_to_evaluate)}]")
     print(f"[Mode: {args.mode}]")
-
-    # Determine modes to evaluate
-    if args.mode == 'all':
-        modes = ['conditional', 'inpainting']
-    else:
-        modes = [args.mode]
 
     all_results = {'conditional': [], 'inpainting': []}
 

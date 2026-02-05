@@ -136,7 +136,18 @@ def load_model_from_checkpoint(checkpoint_path, config_path=None, device='cuda')
         if check_dir.exists():
             checkpoints = list(check_dir.glob('checkpoint_*.pt'))
             if checkpoints:
-                checkpoint_path = max(checkpoints, key=lambda p: int(p.stem.split('_')[1]))
+                # Find checkpoint with highest epoch number
+                def get_epoch(p):
+                    try:
+                        return int(p.stem.split('_')[1])
+                    except (ValueError, IndexError):
+                        return -1
+                # Filter to numbered checkpoints only
+                numbered = [cp for cp in checkpoints if get_epoch(cp) >= 0]
+                if numbered:
+                    checkpoint_path = max(numbered, key=get_epoch)
+                else:
+                    checkpoint_path = checkpoints[0]  # Fallback
                 checkpoint = torch.load(checkpoint_path, map_location=device)
             else:
                 raise FileNotFoundError(f"No checkpoint found in {check_dir}")

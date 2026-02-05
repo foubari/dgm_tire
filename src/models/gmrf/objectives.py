@@ -1,8 +1,7 @@
 """
-Objective functions for GMRF-MVAE training.
+Objective functions for GMRF MVAE training.
 
-This module implements the ELBO computation with various reconstruction losses,
-matching the ICTAI original implementation.
+This module implements the ELBO computation with various reconstruction losses.
 """
 
 import torch
@@ -11,15 +10,16 @@ import torch.nn.functional as F
 
 def kl_divergence_gaussians(mu_q, Sigma_q, mu_p, Sigma_p):
     """
-    Compute KL divergence between two multivariate Gaussians.
+    Compute the KL divergence between two multivariate Gaussians.
 
-    KL(q||p) = 0.5 * [log|Σ_p|/|Σ_q| - d + tr(Σ_p^{-1}Σ_q) + (μ_p - μ_q)^T Σ_p^{-1} (μ_p - μ_q)]
+    KL(q||p) = 0.5 * [log|Sigma_p|/|Sigma_q| - d + tr(Sigma_p^{-1}Sigma_q)
+                      + (mu_p - mu_q)^T Sigma_p^{-1} (mu_p - mu_q)]
 
     Args:
         mu_q: Mean of q(z|x), shape [batch_size, latent_dim]
-        Sigma_q: Covariance of q(z|x), shape [batch_size, latent_dim, latent_dim]
+        Sigma_q: Covariance matrix of q(z|x), shape [batch_size, latent_dim, latent_dim]
         mu_p: Mean of p(z), shape [latent_dim]
-        Sigma_p: Covariance of p(z), shape [latent_dim, latent_dim]
+        Sigma_p: Covariance matrix of p(z), shape [latent_dim, latent_dim]
 
     Returns:
         kl_div: KL divergence (scalar, averaged over batch)
@@ -30,22 +30,20 @@ def kl_divergence_gaussians(mu_q, Sigma_q, mu_p, Sigma_p):
     Sigma_p_inv = torch.inverse(Sigma_p)
 
     # Expand to batch size
-    Sigma_p_inv_expanded = Sigma_p_inv.unsqueeze(0).expand(
-        batch_size, latent_dim, latent_dim
-    )
+    Sigma_p_inv_expanded = Sigma_p_inv.unsqueeze(0).expand(batch_size, latent_dim, latent_dim)
 
     # Trace term: trace(Sigma_p_inv @ Sigma_q)
-    trace_term = torch.einsum("bij,bij->b", Sigma_p_inv_expanded, Sigma_q)
+    trace_term = torch.einsum('bij,bij->b', Sigma_p_inv_expanded, Sigma_q)
+
+    # Difference of means
+    diff = mu_q - mu_p.unsqueeze(0)
 
     # Mahalanobis term: (mu_q - mu_p)^T @ Sigma_p_inv @ (mu_q - mu_p)
-    diff = mu_q - mu_p.unsqueeze(0)  # [batch_size, latent_dim]
-    mahalanobis_term = torch.einsum(
-        "bi,bij,bj->b", diff, Sigma_p_inv_expanded, diff
-    )
+    mahalanobis_term = torch.einsum('bi,bij,bj->b', diff, Sigma_p_inv_expanded, diff)
 
     # Log determinants
-    sign_q, logdet_q = torch.slogdet(Sigma_q)  # [batch_size]
-    sign_p, logdet_p = torch.slogdet(Sigma_p)  # scalar
+    sign_q, logdet_q = torch.slogdet(Sigma_q)
+    sign_p, logdet_p = torch.slogdet(Sigma_p)
 
     # Check positive definiteness
     if not torch.all(sign_q > 0):
@@ -54,20 +52,14 @@ def kl_divergence_gaussians(mu_q, Sigma_q, mu_p, Sigma_p):
         raise ValueError("Sigma_p is not positive definite")
 
     # KL divergence per sample
-    kl_div = 0.5 * (
-        logdet_p - logdet_q - latent_dim + trace_term + mahalanobis_term
-    )
+    kl_div = 0.5 * (logdet_p - logdet_q - latent_dim + trace_term + mahalanobis_term)
 
     return kl_div.mean()
 
 
-def compute_elbo_dist(
-    model, data, beta=1, loss_type="mse", alpha_mse=0.5, weights=None
-):
+def compute_elbo_dist(model, data, beta=1, loss_type="mse", alpha_mse=0.5, weights=None):
     """
-    Compute ELBO loss with weighted reconstruction.
-
-    This matches the ICTAI original implementation exactly.
+    Compute the ELBO loss with weighted reconstruction.
 
     Args:
         model: GMRF_MVAE model (must have mu_p, get_sigma_p(), muq, Sigmaq, recons)
@@ -77,7 +69,7 @@ def compute_elbo_dist(
             - "mse": Mean Squared Error
             - "l1": L1 (MAE) loss
             - "l1_mse": Mixed L1-MSE with alpha_mse weighting
-            - "split_l1_mse": ICTAI original! sum(w*MSE) + sum((1-w)*L1)
+            - "split_l1_mse": sum(w*MSE) + sum((1-w)*L1)
             - "bce": Binary Cross-Entropy
         alpha_mse: Weight for MSE in "l1_mse" mode (default: 0.5)
         weights: Per-component reconstruction weights (default: equal weights)
@@ -103,10 +95,10 @@ def compute_elbo_dist(
         )
 
     # Get prior and posterior distributions
-    mu_p = model.mu_p  # [total_latent_dim]
-    Sigma_p = model.get_sigma_p()  # [total_latent_dim, total_latent_dim]
-    mu_q = model.muq  # [batch_size, total_latent_dim]
-    Sigma_q = model.Sigmaq  # [batch_size, total_latent_dim, total_latent_dim]
+    mu_p = model.mu_p
+    Sigma_p = model.get_sigma_p()
+    mu_q = model.muq
+    Sigma_q = model.Sigmaq
 
     # KL divergence: KL(q(z|x) || p(z))
     kl_divergence = kl_divergence_gaussians(mu_q, Sigma_q, mu_p, Sigma_p)
@@ -130,9 +122,7 @@ def compute_elbo_dist(
         )
 
     elif loss_type == "split_l1_mse":
-        # ICTAI ORIGINAL FORMULA!
         # MSE gets weight w, L1 gets weight (1-w)
-        # Total: sum(w*MSE) + sum((1-w)*L1)
         mse_term = sum(
             w * F.mse_loss(mu, d) for w, mu, d in zip(weights, model.recons, data)
         )

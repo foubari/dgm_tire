@@ -1,35 +1,32 @@
 #!/usr/bin/env python3
 """
-Training script for MMVAE+ - Modular version.
+Training script for GMRF MVAE with conditioning support.
 
 Usage:
-    python train.py --config configs/mmvaeplus_default.yaml
-    python train.py --config configs/mmvaeplus_default.yaml --epochs 100 --batch_size 32
+    python train.py --config configs/gmrf_default.yaml
+    python train.py --config configs/gmrf_default.yaml --epochs 100 --batch_size 32
 """
 
 import os
 import sys
 import platform
-import time
-import pickle
 import argparse
 from pathlib import Path
 from datetime import datetime
 
-# Add src_new to path
+# Add src to path
 _THIS_FILE = Path(__file__).resolve()
-_SRC_NEW_DIR = _THIS_FILE.parent.parent.parent
-_PROJECT_ROOT = _SRC_NEW_DIR.parent
+_SRC_DIR = _THIS_FILE.parent.parent.parent
+_PROJECT_ROOT = _SRC_DIR.parent
 
-if str(_SRC_NEW_DIR) not in sys.path:
-    sys.path.insert(0, str(_SRC_NEW_DIR))
+if str(_SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(_SRC_DIR))
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 _IS_WINDOWS = platform.system() == 'Windows'
 
 import torch
-import torch.nn as nn
 from torch.utils.data import DataLoader
 
 # Optional tensorboard
@@ -40,10 +37,11 @@ except ImportError:
     HAS_TENSORBOARD = False
     SummaryWriter = None
 
+import yaml
+
 from datasets.continuous import MultiComponentDataset
-from models.mmvaeplus import MMVAEplusEpure, MMVAEplusToy
-from models.mmvaeplus.objectives import m_elbo, m_dreg
-from models.mmvaeplus.utils import unpack_data
+from models.gmrf import Epure_GMRF_MVAE
+from models.gmrf.objectives import compute_elbo_dist
 from utils.config import load_config, auto_complete_config, validate_config, resolve_path
 
 
@@ -58,132 +56,175 @@ def set_seed(seed):
     np.random.seed(seed)
 
 
-def train_epoch(model, train_loader, optimizer, objective_fn, device, epoch):
+def unpack_data(batch, device='cuda'):
+    """
+    Unpack batch from MultiComponentDataset.
+
+    Returns:
+        data: List of tensors on device (one per component)
+        cond: (B, cond_dim) tensor on device or None
+    """
+    if isinstance(batch, (tuple, list)) and len(batch) == 2:
+        data_tuple, cond = batch
+
+        # Handle stacked tensor or tuple
+        if isinstance(data_tuple, torch.Tensor):
+            # Stacked format: (B, C, H, W) -> list of (B, 1, H, W)
+            data = [data_tuple[:, i:i+1].to(device) for i in range(data_tuple.size(1))]
+        else:
+            # Already tuple/list format
+            data = [d.to(device) for d in data_tuple]
+
+        cond = cond.to(device).float() if cond is not None else None
+        return data, cond
+    else:
+        # Fallback for old format (no conditioning)
+        if isinstance(batch, torch.Tensor):
+            data = [batch[:, i:i+1].to(device) for i in range(batch.size(1))]
+        elif isinstance(batch, (tuple, list)):
+            data = [d.to(device) for d in batch]
+        else:
+            data = [batch.to(device)]
+        return data, None
+
+
+def train_epoch(model, train_loader, optimizer, config, device, epoch):
     """Train for one epoch."""
     model.train()
     total_loss = 0.0
+    total_recon = 0.0
+    total_kl = 0.0
     num_batches = 0
-    
+
+    training_cfg = config['training']
+    model_cfg = config['model']
+
+    loss_type = training_cfg.get('recon_loss', 'mse')
+    alpha_mse = training_cfg.get('alpha_mse', 0.5)
+    recon_weights = training_cfg.get('recon_weights', None)
+    beta = model_cfg.get('beta', 1.0)
+
     for batch_idx, batch in enumerate(train_loader):
-        # Unpack data: (data_tuple, cond) where data_tuple is tuple of 5 tensors
         data, cond = unpack_data(batch, device=device)
-        
-        # Replicate cond for each modality (5 components)
-        if cond is not None:
-            cond_list = [cond] * len(data)  # List of 5 condition tensors
-        else:
-            cond_list = None
-        
+
         optimizer.zero_grad()
-        
-        # Compute loss (negative ELBO or DReG)
-        loss = -objective_fn(model, data, cond=cond_list, K=model.params.K)
-        
+
+        # Forward pass
+        model(data, cond=cond)
+
+        # Compute ELBO
+        elbo, recon_loss, kl_div = compute_elbo_dist(
+            model, data, beta=beta,
+            loss_type=loss_type, alpha_mse=alpha_mse, weights=recon_weights
+        )
+
+        loss = -elbo
         loss.backward()
         optimizer.step()
-        
+
         total_loss += loss.item()
+        total_recon += (-recon_loss.item())
+        total_kl += kl_div.item()
         num_batches += 1
-        
+
         if batch_idx % 50 == 0:
-            print(f"  Batch {batch_idx}: loss={loss.item():.4f}")
-    
-    return total_loss / num_batches if num_batches > 0 else 0.0
+            print(f"  Batch {batch_idx}: loss={loss.item():.4f}, recon={-recon_loss.item():.4f}, kl={kl_div.item():.4f}")
+
+    avg_loss = total_loss / num_batches if num_batches > 0 else 0.0
+    avg_recon = total_recon / num_batches if num_batches > 0 else 0.0
+    avg_kl = total_kl / num_batches if num_batches > 0 else 0.0
+
+    return avg_loss, avg_recon, avg_kl
 
 
-def eval_model(model, test_loader, device):
+def eval_model(model, test_loader, config, device):
     """Evaluate model on test set."""
     model.eval()
     total_loss = 0.0
     num_batches = 0
-    
+
+    training_cfg = config['training']
+    model_cfg = config['model']
+
+    loss_type = training_cfg.get('recon_loss', 'mse')
+    alpha_mse = training_cfg.get('alpha_mse', 0.5)
+    recon_weights = training_cfg.get('recon_weights', None)
+    beta = model_cfg.get('beta', 1.0)
+
     with torch.no_grad():
         for batch in test_loader:
             data, cond = unpack_data(batch, device=device)
-            
-            if cond is not None:
-                cond_list = [cond] * len(data)
-            else:
-                cond_list = None
-            
-            loss = -m_elbo(model, data, cond=cond_list, K=model.params.K, test=True)
-            total_loss += loss.item()
+
+            model(data, cond=cond)
+
+            elbo, _, _ = compute_elbo_dist(
+                model, data, beta=beta,
+                loss_type=loss_type, alpha_mse=alpha_mse, weights=recon_weights
+            )
+
+            total_loss += (-elbo.item())
             num_batches += 1
-    
+
     return total_loss / num_batches if num_batches > 0 else 0.0
 
 
-def save_checkpoint(model, optimizer, epoch, loss, output_dir):
+def save_checkpoint(model, optimizer, epoch, loss, output_dir, is_best=False):
     """Save model checkpoint."""
     output_dir.mkdir(parents=True, exist_ok=True)
-    checkpoint_path = output_dir / f"checkpoint_{epoch}.pt"
-    
-    # Convert params object to dict for serialization
-    params_dict = {}
-    if hasattr(model.params, '__dict__'):
-        params_dict = model.params.__dict__.copy()
+
+    if is_best:
+        checkpoint_path = output_dir / "checkpoint_best.pt"
     else:
-        # If params is a class, get all attributes
-        params_dict = {
-            'latent_dim_w': model.params.latent_dim_w,
-            'latent_dim_z': model.params.latent_dim_z,
-            'latent_dim_u': model.params.latent_dim_u,
-            'nf': model.params.nf,
-            'nf_max': model.params.nf_max,
-            'cond_dim': getattr(model.params, 'cond_dim', 0),
-            'priorposterior': model.params.priorposterior,
-            'datadir': getattr(model.params, 'datadir', None),
-            'no_cuda': getattr(model.params, 'no_cuda', False),
-            'beta': getattr(model.params, 'beta', 2.5),
-            'K': getattr(model.params, 'K', 1),
-        }
-    
+        checkpoint_path = output_dir / f"checkpoint_{epoch}.pt"
+
     checkpoint = {
         'epoch': epoch,
         'model_state_dict': model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
         'loss': loss,
-        'params': params_dict,
     }
-    
+
     torch.save(checkpoint, checkpoint_path)
     print(f"Checkpoint saved: {checkpoint_path}")
 
 
 def main():
-    parser = argparse.ArgumentParser(description='MMVAE+ Epure Training')
+    parser = argparse.ArgumentParser(description='GMRF MVAE Training')
     parser.add_argument('--config', type=str, required=True,
-                      help='Path to config YAML file')
+                       help='Path to config YAML file')
     parser.add_argument('--epochs', type=int, default=None,
-                      help='Number of epochs (overrides config)')
+                       help='Number of epochs (overrides config)')
     parser.add_argument('--batch_size', type=int, default=None,
-                      help='Batch size (overrides config)')
+                       help='Batch size (overrides config)')
     parser.add_argument('--device', type=str, default=None,
-                      help='Device (cuda/cpu, overrides config)')
+                       help='Device (cuda/cpu, overrides config)')
     parser.add_argument('--seed', type=int, default=None,
-                      help='Random seed (overrides config)')
-    
+                       help='Random seed (overrides config)')
+
     args = parser.parse_args()
-    
+
     # Load and auto-complete config
     config = load_config(args.config)
     config = auto_complete_config(config)
-    validate_config(config, model_type='mmvaeplus')
-    
+    validate_config(config, model_type='gmrf')
+
     # Override with command-line args
     if args.epochs is not None:
         config['training']['epochs'] = args.epochs
     if args.batch_size is not None:
         config['training']['batch_size'] = args.batch_size
-    
+
     # Setup device
-    device = torch.device(args.device if args.device else config['training'].get('device', 'cuda' if torch.cuda.is_available() else 'cpu'))
+    device = torch.device(
+        args.device if args.device else
+        config['training'].get('device', 'cuda' if torch.cuda.is_available() else 'cpu')
+    )
     print(f"Using device: {device}")
-    
+
     # Set seed
     seed = args.seed if args.seed is not None else config['training'].get('seed', 42)
     set_seed(seed)
-    
+
     # Create output directory
     output_dir = resolve_path(config['paths']['output_dir'])
     date_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -194,17 +235,12 @@ def main():
 
     print(f"Output directory: {output_dir}")
 
-    # Save config with num_parameters (will be added later)
-    import yaml
-    with open(output_dir / 'config.yaml', 'w') as f:
-        yaml.dump(config, f)
-
     # Load data
     print("Loading data...")
     data_cfg = config['data']
     root_dir = resolve_path(data_cfg['root_dir'])
     condition_csv = resolve_path(data_cfg['condition_csv'])
-    
+
     train_dataset = MultiComponentDataset(
         root_dir=root_dir / 'train',
         component_dirs=data_cfg['component_dirs'],
@@ -214,10 +250,10 @@ def main():
         filename_pattern=data_cfg.get('filename_pattern', '{prefix}_{component}.png'),
         split='train',
         split_column=data_cfg.get('split_column', 'train'),
-        stacked=False,  # Return tuple instead of concatenated tensor
+        stacked=False,
         normalized=data_cfg.get('normalized', False)
     )
-    
+
     test_dataset = MultiComponentDataset(
         root_dir=root_dir / 'test',
         component_dirs=data_cfg['component_dirs'],
@@ -230,73 +266,78 @@ def main():
         stacked=False,
         normalized=data_cfg.get('normalized', False)
     )
-    
+
+    num_workers = 0 if _IS_WINDOWS else config['training'].get('num_workers', 4)
+
     train_loader = DataLoader(
         train_dataset,
         batch_size=config['training']['batch_size'],
         shuffle=True,
-        num_workers=config['training'].get('num_workers', 4),
+        num_workers=num_workers,
         pin_memory=True
     )
-    
+
     test_loader = DataLoader(
         test_dataset,
         batch_size=config['training']['batch_size'],
         shuffle=False,
-        num_workers=config['training'].get('num_workers', 4),
+        num_workers=num_workers,
         pin_memory=True
     )
-    
+
     print(f"Train samples: {len(train_dataset)}")
     print(f"Test samples: {len(test_dataset)}")
-    
+
     # Create model
-    print("Creating MMVAE+ model...")
+    print("Creating GMRF MVAE model...")
     model_cfg = config['model']
+
+    # Capture device string for class definition
+    device_str = str(device)
     
     # Create params object
     class Params:
-        latent_dim_w = model_cfg['latent_dim_w']
-        latent_dim_z = model_cfg['latent_dim_z']
-        latent_dim_u = model_cfg['latent_dim_u']
+        num_components = len(data_cfg['component_dirs'])
+        latent_dim = model_cfg['latent_dim']
+        diagonal_transf = model_cfg.get('diagonal_transf', 'softplus')
+        hidden_dim = model_cfg['hidden_dim']
+        n_layers = model_cfg['n_layers']
         nf = model_cfg['nf']
-        nf_max = model_cfg['nf_max']
+        nf_max_e = model_cfg.get('nf_max_e', 512)
+        nf_max_d = model_cfg.get('nf_max_d', 256)
         cond_dim = model_cfg.get('cond_dim', 0)
-        priorposterior = model_cfg.get('priorposterior', 'Laplace')
-        datadir = str(root_dir)
-        no_cuda = (device.type == 'cpu')
-        beta = config['training'].get('beta', 2.5)
-        K = config['training'].get('K', 1)
-    
-    # Select model class based on number of components
-    num_components = len(data_cfg['component_dirs'])
-    if num_components == 3:
-        model = MMVAEplusToy(Params()).to(device)
-    elif num_components == 5:
-        model = MMVAEplusEpure(Params()).to(device)
-    else:
-        raise ValueError(f"Unsupported number of components: {num_components}. Expected 3 (toy) or 5 (epure).")
+        image_size = tuple(model_cfg.get('image_size', [64, 32]))
+        reduced_diag = model_cfg.get('reduced_diag', False)
+        device = device_str
+        component_names = data_cfg['component_dirs']
 
-    # Count parameters and add to config
+    model = Epure_GMRF_MVAE(Params()).to(device)
+
+    # Count parameters
     num_params = sum(p.numel() for p in model.parameters())
     config['model']['num_parameters'] = num_params
 
+    # Save config
+    with open(output_dir / 'config.yaml', 'w') as f:
+        yaml.dump(config, f)
+
     print(f"Model: {model.modelName}")
-    print(f"  Components: {len(model.vaes)} (detected: {num_components})")
-    print(f"  Latent dims: w={Params.latent_dim_w}, z={Params.latent_dim_z}, u={Params.latent_dim_u}")
+    print(f"  Components: {Params.num_components} ({Params.component_names})")
+    print(f"  Latent dim: {Params.latent_dim} (total: {Params.num_components * Params.latent_dim})")
     print(f"  Cond dim: {Params.cond_dim}")
+    print(f"  Image size: {Params.image_size}")
     print(f"  Total parameters: {num_params:,}")
-    
+
     # Optimizer
     training_cfg = config['training']
     optimizer_name = training_cfg.get('optimizer', 'adam').lower()
     lr = training_cfg['lr']
-    
+
     if optimizer_name == 'adam':
         optimizer = torch.optim.Adam(
             model.parameters(),
             lr=lr,
-            amsgrad=training_cfg.get('amsgrad', True)
+            amsgrad=training_cfg.get('amsgrad', False)
         )
     elif optimizer_name == 'sgd':
         optimizer = torch.optim.SGD(
@@ -306,65 +347,71 @@ def main():
         )
     else:
         raise ValueError(f"Unknown optimizer: {optimizer_name}")
-    
-    # Objective function
-    objective_name = training_cfg.get('objective', 'elbo')
-    if objective_name == 'elbo':
-        objective_fn = m_elbo
-    elif objective_name == 'dreg':
-        objective_fn = m_dreg
-    else:
-        raise ValueError(f"Unknown objective: {objective_name}")
-    
-    print(f"Objective: {objective_name}")
-    
+
     # TensorBoard writer (optional)
     writer = SummaryWriter(output_dir / 'tb') if HAS_TENSORBOARD else None
-    
+
     # Training loop
     epochs = training_cfg['epochs']
-    eval_every = training_cfg.get('eval_every', 50)
-    checkpoint_epochs = training_cfg.get('checkpoint_epochs', [50, 100, 150, 250])
-    
+    eval_every = training_cfg.get('eval_every', 10)
+    check_every = training_cfg.get('check_every', 50)
+
     print(f"\nStarting training for {epochs} epochs...")
-    print(f"  Objective: {objective_name}")
-    print(f"  K: {Params.K}")
-    print(f"  Beta: {Params.beta}")
-    
+    print(f"  Loss type: {training_cfg.get('recon_loss', 'mse')}")
+    print(f"  Beta: {model_cfg.get('beta', 1.0)}")
+
     best_val_loss = float('inf')
-    
+    history = {'train_loss': [], 'train_recon': [], 'train_kl': [], 'val_loss': []}
+
     for epoch in range(1, epochs + 1):
         print(f"\nEpoch {epoch}/{epochs}")
-        
+
         # Train
-        loss = train_epoch(model, train_loader, optimizer, objective_fn, device, epoch)
-        print(f"  Train loss: {loss:.4f}")
-        
+        loss, recon, kl = train_epoch(model, train_loader, optimizer, config, device, epoch)
+        print(f"  Train loss: {loss:.4f}, recon: {recon:.4f}, kl: {kl:.4f}")
+
+        history['train_loss'].append(loss)
+        history['train_recon'].append(recon)
+        history['train_kl'].append(kl)
+
         # Log
         if writer:
             writer.add_scalar('Loss/Train', loss, epoch)
-        
+            writer.add_scalar('Recon/Train', recon, epoch)
+            writer.add_scalar('KL/Train', kl, epoch)
+
         # Evaluate
         if epoch % eval_every == 0:
-            val_loss = eval_model(model, test_loader, device)
+            val_loss = eval_model(model, test_loader, config, device)
             print(f"  Val loss: {val_loss:.4f}")
-            
+
+            history['val_loss'].append(val_loss)
+
             if writer:
                 writer.add_scalar('Loss/Val', val_loss, epoch)
-            
+
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
-                save_checkpoint(model, optimizer, epoch, val_loss, check_dir)
-        
-        # Save checkpoint at specified epochs
-        if epoch in checkpoint_epochs:
+                save_checkpoint(model, optimizer, epoch, val_loss, check_dir, is_best=True)
+
+        # Save checkpoint at intervals
+        if epoch % check_every == 0:
             save_checkpoint(model, optimizer, epoch, loss, check_dir)
-    
+
+    # Save final checkpoint
+    save_checkpoint(model, optimizer, epochs, loss, check_dir)
+
+    # Save training history
+    import pickle
+    with open(output_dir / 'history.pkl', 'wb') as f:
+        pickle.dump(history, f)
+
     print(f"\nTraining completed! Best val loss: {best_val_loss:.4f}")
+    print(f"Outputs saved to: {output_dir}")
+
     if writer:
         writer.close()
 
 
 if __name__ == '__main__':
     main()
-

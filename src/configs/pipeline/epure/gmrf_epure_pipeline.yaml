@@ -1,0 +1,69 @@
+model:
+  type: gmrf
+  num_components: 5
+  latent_dim: 4
+  diagonal_transf: softplus
+  hidden_dim: 128
+  n_layers: 2
+  nf: 32
+  nf_max_e: 512
+  nf_max_d: 256
+  beta: .001
+  cond_dim: 2
+  image_size:
+  - 64
+  - 32
+  reduced_diag: false
+
+data:
+  root_dir: data/epure
+  component_dirs:
+  - group_nc
+  - group_km
+  - bt
+  - fpu
+  - tpc
+  condition_csv: data/epure/performances.csv
+  condition_columns:
+  - width_px
+  - height_px
+  prefix_column: matching
+  filename_pattern: mdbk_{prefix}_{component}.png
+  split_column: train
+  normalized: true
+
+training:
+  batch_size: 32
+  epochs: 500
+  lr: 0.0005
+  optimizer: adam
+  amsgrad: false
+  recon_loss: split_l1_mse
+  alpha_mse: 0.5
+  recon_weights:
+  - 0.5
+  - 0.5
+  - 1.0
+  - 0.5
+  - 1.0
+  eval_every: 10
+  check_every: 100
+  num_workers: 0
+  seed: 42
+  device: cuda
+
+sampling:
+  unconditional:
+    n_samples: 1000
+    batch_size: 64
+  conditional:
+    components:
+    - group_nc
+    - fpu
+    - group_km
+    batch_size: 32
+  num_samples: 1000
+
+paths:
+  output_dir: outputs/gmrf/
+  samples_dir: samples/gmrf/
